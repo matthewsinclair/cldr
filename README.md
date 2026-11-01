@@ -25,3 +25,11 @@ The calendar is read from BusyCal's local store, which holds every account BusyC
 ## Licence
 
 MIT.
+
+## Install
+
+```sh
+brew install matthewsinclair/cldr/cldr
+```
+
+The formula builds from the release tag's source. Releasing: `tools/release VERSION` (with `--dry-run` first) bumps, checks, tags and pushes, then renders `packaging/homebrew/cldr.rb` into the tap checkout at `../Brew/homebrew-cldr` and pushes it.

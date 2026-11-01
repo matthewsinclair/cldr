@@ -1,6 +1,6 @@
 # TN0002: Cldr build plan
 
-Status: steps 0 to 3 done; CI (step 0) still to add. Design: [TN0001](tn0001-cldr-design-note.md).
+Status: steps 0 to 3 done, with billable hours; CI and the release path written, first release pending. Design: [TN0001](tn0001-cldr-design-note.md).
 
 Each step ends with something usable on a real journal, so the old tooling can be retired one piece at a time. Sizes are relative (S, M, L).
 
@@ -75,6 +75,6 @@ Done when: a real month renders cleanly. From here `month new` also does its fin
 
 - `cldr briefing`: the generated blocks of the Daily Briefing, as the old briefing script writes them.
 - Remove the old scripts, prompts, Python helpers and `_processing/` files from the journal.
-- Release: tags, binaries, Homebrew formula, as Ccusage does.
+- Release: tags and a Homebrew formula built from the tag's source (`tools/release`, `tools/formula`, the `homebrew-cldr` tap); shell only. Prebuilt, signed binaries only if ever needed.
 
 Done when: the journal's `bin/` is gone.
