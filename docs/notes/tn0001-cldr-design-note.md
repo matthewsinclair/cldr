@@ -1,6 +1,6 @@
 # TN0001: Cldr design note
 
-Status: draft, D1 settled. Nothing here is built yet.
+Status: design settled, ready to build. Nothing here is built yet.
 
 ## The problem
 
@@ -8,8 +8,8 @@ A plain-text time journal keeps one folder of Markdown per month: Day Notes (a t
 
 Two things change the picture:
 
-- The calendar can be read directly. BusyCal keeps every synced calendar in a local SQLite store, readable read-only.
-- The Day Notes time log already has the shape of the Activity Log's day tables (project, time, hours, what).
+- The calendar can be read directly. BusyCal syncs every account (Google, Microsoft 365 and others) into one local SQLite store, readable read-only.
+- The Day Notes time log already records every hour by tag, time and day, so the Activity Log need not copy its rows.
 
 So everything in the Activity Log, the month grid and the hour totals is a function of two sources. A function can be re-run at any time, diffed, and tested.
 
@@ -37,7 +37,7 @@ Decision D1 (settled): the Day Notes are the record and the calendar is the fall
 - **Entry**: date, start, end, hours, tag, what, source (`notes` or `calendar`).
 - **Day**: the entries for one date, a total, and flags.
 - **Week**: Monday to Sunday, ISO week number. A week spanning two months belongs to the earlier month's Activity Log.
-- **Month**: the calendar month; its grid covers every day of its own month, including the days of a spanning week whose table sits in the previous month.
+- **Month**: the calendar month; its grid covers every day of its own month, including the days of a spanning week whose summary sits in the previous month.
 
 ## Rules
 
@@ -55,7 +55,7 @@ Each of these is a function with tests. Values in brackets come from config.
 
 ## Outputs
 
-- **Activity Log**: one section per week (day tables, weekly summary by tag) and the month grid. `cldr` owns these regions and nothing else in the file.
+- **Activity Log**: one section per week, holding the weekly summary (hours per tag per day, with totals), and the month grid. `cldr` owns these regions and nothing else in the file. The Activity Log no longer copies the Day Notes rows into per-day tables: a day's rows are written in one place only, the Day Notes.
 - **Hours**: per-tag grids by week, month and year, computed from the model, never parsed back out of the Activity Log.
 - **Daily Briefing**: the generated blocks (today, tomorrow, the week, the month), as today. The hand-written sections stay hand-written.
 - **Calendar CSV export**: `Date,From,To,Title,Modified` for one week or month, for the transition only, so the existing week wrap can read the calendar without PDFs or OCR. Retired once rendering replaces it.
@@ -88,13 +88,13 @@ cldr paths                     resolved XDG paths
 2. Add the spanning-week marker to the new Activity Log when the first week belongs to the previous month.
 3. Render the previous month one last time and run `check`; stop if it reports a diff the user has not seen.
 4. Move the previous month's files into `YYYY/YYYYMM/`. In a git work tree this is `git mv`, so history follows the files; otherwise a plain move.
-5. Point the current-briefing link at the new month's briefing, replacing a link that a sync service has turned into a plain file.
+5. Repoint the current-briefing symlink at the new month's briefing. If a sync service has turned the link into a plain file, compare it with the month's file first, stop if it holds anything the month's file lacks, and otherwise replace it with the link.
 
 Nothing in a moved file is rewritten. The Link Dump in particular moves untouched.
 
 ## Calendar access
 
-The first source is BusyCal's local store, opened read-only (`?mode=ro`); `cldr` never writes to it. The reader sits behind a `CalendarSource` trait so that another source (an ICS export, EventKit) can be added without touching the rules. On macOS the store sits in another app's group container, which needs Full Disk Access for the terminal running `cldr`; an OS update can revoke it. `cldr doctor` checks access and names the setting when it is missing. Times are read in the event's zone and rendered in the configured zone.
+The source is BusyCal's local store: the union of the user's calendar accounts (Google, Microsoft 365 and any other BusyCal syncs), so one reader covers every account with no logins or tokens of its own. Config selects accounts and calendars by name. It is opened read-only (`?mode=ro`); `cldr` never writes to it. The reader sits behind a `CalendarSource` trait so that another source (an ICS export, EventKit) can be added without touching the rules. On macOS the store sits in another app's group container, which needs Full Disk Access for the terminal running `cldr`; an OS update can revoke it. `cldr doctor` checks access and names the setting when it is missing. Times are read in the event's zone and rendered in the configured zone.
 
 ## Configuration
 
@@ -109,7 +109,7 @@ templates = "~/.config/cldr/templates"
 
 [calendar]
 source = "busycal"
-include = ["Work", "you@example.com"]   # calendar or account name substrings
+include = ["you@example.com", "you@work.example"]   # account or calendar name substrings
 exclude = ["Holidays"]
 
 [tags]
@@ -146,18 +146,15 @@ The repository is public. It holds no names, addresses, client or project names,
 ## Migration
 
 1. `cldr export week|month`: the CSV from the store; the PDFs and OCR stop.
-2. `cldr render` and `check` beside the old week wrap.
+2. `cldr render` and `check` beside the old week wrap. Re-rendering a past week replaces its old day tables with the summary; git keeps the old form.
 3. `cldr month new` with the archive move; the month wrap and its prompt are retired.
 4. `cldr hours` and `cldr briefing`; the old scripts and the Python helpers are retired.
 5. Remove the old `bin/` scripts, prompts and `_processing/` files from the journal.
-
-## Open questions
-
-1. Do the Activity Log's day tables still earn their place, when they repeat the Day Notes? The alternative is a week summary and the grid only.
-2. Is BusyCal the only calendar source needed, or should ICS come in the first version?
-3. The current-briefing link: a symlink (current behaviour) or a small generated file, if the sync service keeps turning links into files?
 
 ## Settled
 
 - D1: the Day Notes are the record; the calendar is the fallback and the cross-check.
 - The old `timelog` and `convert_day_notes` commands are not carried over.
+- The Activity Log drops its per-day tables: weekly summary and month grid only.
+- The current-briefing file stays a symlink, repointed each month.
+- BusyCal's store is the calendar source, covering every synced account; no direct Google or Microsoft readers in the first version.
