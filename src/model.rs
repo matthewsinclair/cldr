@@ -375,7 +375,7 @@ impl<'a> Builder<'a> {
       .filter(|(i, _)| *i != chosen)
       .map(|(_, f)| f)
     {
-      if copy.rows != day.rows {
+      if !same_record(&copy.rows, &day.rows) {
         self.flag_at(
           "day_differs",
           Some(date),
@@ -566,6 +566,12 @@ impl<'a> Builder<'a> {
     }
     (entries, overlap)
   }
+}
+
+/// Two copies of a day record the same time: rows equal in all but their line numbers.
+fn same_record(a: &[notes::Row], b: &[notes::Row]) -> bool {
+  let key = |r: &notes::Row| (r.tag.clone(), r.span, r.hours, r.bill, r.what.clone());
+  a.len() == b.len() && a.iter().zip(b).all(|(x, y)| key(x) == key(y))
 }
 
 /// The midnight rule: entries on `next` that start where a session on `day` ended, past midnight,
@@ -1197,6 +1203,19 @@ mod tests {
       .filter(|k| *k == "notes_overlap")
       .count();
     assert_eq!(overlaps, 1);
+    Ok(())
+  }
+
+  #[test]
+  fn identical_copies_in_two_files_are_not_flagged() -> Result<()> {
+    let date = Date::new(2026, 2, 1)?;
+    let rows: &[&str] = &["| @a | 09:00-10:00 | 1.0 | x |"];
+    // The earlier file has extra days before it, so the copy sits on a different line.
+    let earlier_day = date.saturating_sub(1.day());
+    let previous = month_file(earlier_day, &[(earlier_day, rows), (date, rows)]);
+    let own = month_file(date, &[(date, rows)]);
+    let data = Case::new(Period::Week(date), vec![previous, own]).build();
+    assert!(!kinds(&data, Some(date)).contains(&"day_differs"));
     Ok(())
   }
 }
