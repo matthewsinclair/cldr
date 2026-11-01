@@ -48,3 +48,13 @@ max_gap_hours = 1.0
 "day_notes.md" = "day-notes"
 "link_dump.md" = "link-dump"
 "daily_briefing.md" = "daily-briefing"
+
+# cldr briefing: from cutover_hour on, the default briefing is tomorrow's. Each block is a
+# section filled from a command's output, eg a list of open projects.
+[briefing]
+cutover_hour = 15
+
+[[briefing.blocks]]
+name = "projects"
+heading = "Projects"
+command = ["~/bin/open-projects"]

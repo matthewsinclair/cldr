@@ -26,6 +26,44 @@ pub struct Config {
   pub rules: Rules,
   #[serde(default)]
   pub month: MonthFiles,
+  #[serde(default)]
+  pub briefing: Briefing,
+}
+
+/// The Daily Briefing.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Briefing {
+  /// From this hour on, the default briefing is tomorrow's.
+  #[serde(default = "default_cutover_hour")]
+  pub cutover_hour: i8,
+  /// Sections filled from a command's output, eg a list of open engagements.
+  #[serde(default)]
+  pub blocks: Vec<BriefingBlock>,
+}
+
+impl Default for Briefing {
+  fn default() -> Self {
+    Briefing {
+      cutover_hour: default_cutover_hour(),
+      blocks: Vec::new(),
+    }
+  }
+}
+
+fn default_cutover_hour() -> i8 {
+  15
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BriefingBlock {
+  /// The block's marker name: `<!-- gen:NAME -->`.
+  pub name: String,
+  /// Its section heading in a new briefing.
+  pub heading: String,
+  /// The program and its arguments; a leading `~/` is expanded.
+  pub command: Vec<String>,
 }
 
 /// What a month is made of, for `cldr month new`.
@@ -264,6 +302,7 @@ mod tests {
     assert!(!config.journal.zones.is_empty());
     assert!(!config.month.templates.is_empty());
     assert!(!config.bill.is_empty());
+    assert!(!config.briefing.blocks.is_empty());
     config.zones()?;
     Ok(())
   }

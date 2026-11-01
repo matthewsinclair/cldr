@@ -1,6 +1,6 @@
 # TN0002: Cldr build plan
 
-Status: steps 0 to 5 done, with billable hours; v0.1.0 released; 2026 rendered. Next: step 6. Design: [TN0001](tn0001-cldr-design-note.md).
+Status: steps 0 to 6 done. v0.1.0 released; v0.2.0 (render, briefing, check) to release. Design: [TN0001](tn0001-cldr-design-note.md).
 
 Each step ends with something usable on a real journal, so the old tooling can be retired one piece at a time. Sizes are relative (S, M, L).
 
@@ -82,3 +82,5 @@ Built: `render` (sections between `<!-- cldr:month YYYY-MM -->` and `<!-- cldr:w
 - Release: tags and a Homebrew formula built from the tag's source (`tools/release`, `tools/formula`, the `homebrew-cldr` tap); shell only. Prebuilt, signed binaries only if ever needed.
 
 Done when: the journal's `bin/` is gone.
+
+Done: `cldr briefing [DATE] [--dry-run]` (a port of the old briefing script: the same file and gen blocks, the calendar lines with the event's own link and its video call, and configured `[[briefing.blocks]]` filled from a command's output, so nothing estate-specific is in cldr); `link` and `join` on calendar events; `cldr render year` writing `YYYY-hours-ytd.md` (hours and billable hours by project and month, and each month's grid). The journal's `bin/`, prompts, tests and per-week analyses are removed and its README and HANDOVER rewritten. A dry run of the briefing for a real day matched the old script's output line for line, but for the order of two events starting together.

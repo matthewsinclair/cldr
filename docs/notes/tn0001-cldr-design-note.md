@@ -78,6 +78,7 @@ Settled while building step 2:
 ```text
 cldr render week [DATE]        the week's generated section and the month's JSON (default last week)
 cldr render month [YYYY-MM]    every week of the month, the grid, and the JSON
+cldr render year [YYYY]        the year's hours report, YYYY-hours-ytd.md
 cldr check week|month|year     print the diff and the flags; write nothing
 cldr data week|month|year      the structured data as JSON on stdout
 cldr month new [YYYY-MM]       create the month's files and archive the previous month

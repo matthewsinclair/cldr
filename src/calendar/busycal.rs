@@ -145,6 +145,32 @@ impl BusyCal {
     }))
   }
 
+  /// The video entry point of an event's conference, when the store has one.
+  fn conference(&self, pk: i64) -> Result<Option<String>> {
+    let mut statement = self
+      .db
+      .prepare("select ZCALLDATA from ZCONFERENCECALLEXTRA where ZPARENTOBJECT = ?1")?;
+    let mut rows = statement.query([pk])?;
+    while let Some(row) = rows.next()? {
+      let Some(data) = blob(row, 0).or_else(|| text(row, 0).map(String::into_bytes)) else {
+        continue;
+      };
+      let Ok(call) = serde_json::from_slice::<serde_json::Value>(&data) else {
+        continue;
+      };
+      let video = call["entryPoints"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| p["entryPointType"] == "video")
+        .and_then(|p| p["uri"].as_str());
+      if let Some(uri) = video {
+        return Ok(Some(uri.to_owned()));
+      }
+    }
+    Ok(None)
+  }
+
   fn uid(&self, object: Option<i64>, pk: i64) -> Result<String> {
     if let Some(object) = object {
       let found: Option<String> = self
@@ -213,6 +239,7 @@ struct Found {
   object: Option<i64>,
   title: String,
   location: Option<String>,
+  url: Option<String>,
   recurring: bool,
   cancelled: bool,
   calendar: String,
@@ -232,7 +259,7 @@ impl CalendarSource for BusyCal {
 
     let mut statement = self.db.prepare(
       "select Z_PK, Z_ENT, ZLOCALTITLESEARCHTEXT, ZTITLE, ZSTARTTIMEANDZONE, ZENDTIMEANDZONE, ZALLDAY, \
-       ZRECURRENCE, ZSTATUS, ZPARENTCONTAINERDIRECT, ZLOCATION, ZOBJECTINFO from ZCOMMONDATA \
+       ZRECURRENCE, ZSTATUS, ZPARENTCONTAINERDIRECT, ZLOCATION, ZOBJECTINFO, ZURL from ZCOMMONDATA \
        where Z_ENT in (?1, ?2) and coalesce(ZEVENTTYPE, 0) = 0 and ZSTARTTIMEANDZONE is not null \
        and ZLOCALFIRSTDAY <= ?3 and (ZLOCALLASTDAY >= ?4 or ZRECURRENCE is not null)",
     )?;
@@ -305,6 +332,7 @@ impl CalendarSource for BusyCal {
           object: int(row, 11),
           title: title.clone(),
           location: text(row, 10),
+          url: text(row, 12),
           recurring: recurrence.is_some() || entity == ENTITY_CHANGED,
           cancelled: int(row, 8) == Some(STATUS_CANCELLED),
           calendar: info.label.clone(),
@@ -318,6 +346,12 @@ impl CalendarSource for BusyCal {
     for f in found {
       let uid = self.uid(f.object, f.pk)?;
       let response = self.response(f.pk, &me)?;
+      let join = self.conference(f.pk)?.or_else(|| {
+        [&f.url, &f.location]
+          .into_iter()
+          .flatten()
+          .find_map(|t| join_link(t))
+      });
       let event = Event {
         uid: uid.clone(),
         title: f.title,
@@ -337,6 +371,8 @@ impl CalendarSource for BusyCal {
         },
         calendars: vec![f.calendar.clone()],
         location: f.location,
+        link: event_link(&uid),
+        join,
         recurring: f.recurring,
         response,
         cancelled: f.cancelled,
@@ -365,6 +401,40 @@ impl CalendarSource for BusyCal {
     });
     Ok(events)
   }
+}
+
+/// BusyCal's own URL for an event, from its UID; none for an event without one.
+fn event_link(uid: &str) -> Option<String> {
+  if uid.is_empty() || uid.starts_with("pk") {
+    return None;
+  }
+  let encoded: String = uid
+    .bytes()
+    .map(|b| {
+      if b.is_ascii_alphanumeric() || b"@.-_".contains(&b) {
+        (b as char).to_string()
+      } else {
+        format!("%{b:02X}")
+      }
+    })
+    .collect();
+  Some(format!("busycalevent://info/{encoded}"))
+}
+
+/// The first Zoom, Google Meet or Teams meeting link in a text.
+fn join_link(text: &str) -> Option<String> {
+  text.match_indices("https://").find_map(|(i, _)| {
+    let url: String = text[i..]
+      .chars()
+      .take_while(|c| !c.is_whitespace())
+      .collect();
+    let rest = &url["https://".len()..];
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let zoom = (host == "zoom.us" || host.ends_with(".zoom.us")) && path.starts_with("j/");
+    let meet = host == "meet.google.com" && !path.is_empty();
+    let teams = host == "teams.microsoft.com" && path.starts_with("l/meetup-join/");
+    (zoom || meet || teams).then_some(url)
+  })
 }
 
 /// "811328400:Europe/London" as a zoned time in its own zone. Floating and unnamed times read as UTC.
@@ -468,9 +538,10 @@ pub mod fixture {
         "create table ZCOMMONDATA (Z_PK integer primary key, Z_ENT integer, ZTITLE blob, ZLOCALHIDDEN integer, \
            ZOBJECTINFO integer, ZLOCALTITLESEARCHTEXT text, ZSTARTTIMEANDZONE text, ZENDTIMEANDZONE text, \
            ZALLDAY integer, ZRECURRENCE integer, ZSTATUS integer, ZPARENTCONTAINERDIRECT integer, \
-           ZORIGINALEVENT integer, ZORIGINALTIMEANDZONE text, ZLOCATION text, ZEVENTTYPE integer, \
+           ZORIGINALEVENT integer, ZORIGINALTIMEANDZONE text, ZLOCATION text, ZURL text, ZEVENTTYPE integer, \
            ZLOCALFIRSTDAY integer, ZLOCALLASTDAY integer);
          create table ZSYNCABLEOBJECT (Z_PK integer primary key, ZREMOTEOBJECT integer, ZUID text);
+         create table ZCONFERENCECALLEXTRA (Z_PK integer primary key, ZPARENTOBJECT integer, ZCALLDATA blob);
          create table ZREMOTEOBJECT (Z_PK integer primary key, ZTHEREMOTESERVICE integer);
          create table ZCOMMONSERVICE (Z_PK integer primary key, ZTITLE text);
          create table ZATTENDEEEXTRA (ZPARENTOBJECT integer, ZNAME text, ZEMAIL text, ZSTATUS integer, ZROLE integer);
@@ -604,6 +675,49 @@ mod tests {
   fn read(store: Store, first: Date, last: Date, filter: &Filter) -> Result<Vec<Event>> {
     let me = vec!["me@example.com".to_owned()];
     BusyCal::from_connection(store.db, Zones::fixed(zone()?), &me).events(first, last, filter)
+  }
+
+  #[test]
+  fn events_carry_their_link_and_join_link() -> Result<()> {
+    let mut store = Store::new()?;
+    let cal = store.calendar("Work", "me@example.com", false)?;
+    let day = Date::new(2026, 10, 19)?;
+    let zoom = "https://example.zoom.us/j/123?pwd=x";
+    let meet = "https://meet.google.com/abc-defg-hij";
+    let in_location = store.event(spec(cal, "Call", "uid one@x", at(day, 9)?, at(day, 10)?))?;
+    store.db.execute(
+      "update ZCOMMONDATA set ZLOCATION = ?1 where Z_PK = ?2",
+      rusqlite::params![format!("Room 4 or {zoom} (online)"), in_location],
+    )?;
+    let conferenced = store.event(spec(cal, "Sync", "uid-two", at(day, 11)?, at(day, 12)?))?;
+    store.db.execute(
+      "update ZCOMMONDATA set ZLOCATION = ?1 where Z_PK = ?2",
+      rusqlite::params![zoom, conferenced],
+    )?;
+    let call = format!(
+      r#"{{"entryPoints":[{{"entryPointType":"phone","uri":"tel:1"}},{{"entryPointType":"video","uri":"{meet}"}}]}}"#
+    );
+    store.db.execute(
+      "insert into ZCONFERENCECALLEXTRA (ZPARENTOBJECT, ZCALLDATA) values (?1, ?2)",
+      rusqlite::params![conferenced, call.into_bytes()],
+    )?;
+    store.event(spec(cal, "Plain", "uid-three", at(day, 13)?, at(day, 14)?))?;
+    let events = read(store, day, day, &Filter::default())?;
+    let by = |t: &str| events.iter().find(|e| e.title == t);
+    assert_eq!(
+      by("Call").and_then(|e| e.join.clone()).as_deref(),
+      Some(zoom)
+    );
+    assert_eq!(
+      by("Sync").and_then(|e| e.join.clone()).as_deref(),
+      Some(meet)
+    );
+    assert_eq!(by("Plain").and_then(|e| e.join.clone()), None);
+    assert_eq!(
+      by("Call").and_then(|e| e.link.clone()).as_deref(),
+      Some("busycalevent://info/uid%20one@x")
+    );
+    Ok(())
   }
 
   #[test]

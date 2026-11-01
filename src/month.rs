@@ -344,12 +344,12 @@ pub fn apply(root: &Path, actions: &[Action]) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn symlink(target: &str, link: &Path) -> Result<()> {
+pub fn symlink(target: &str, link: &Path) -> Result<()> {
   std::os::unix::fs::symlink(target, link).map_err(|e| format!("{}: {e}", link.display()).into())
 }
 
 #[cfg(not(unix))]
-fn symlink(_target: &str, link: &Path) -> Result<()> {
+pub fn symlink(_target: &str, link: &Path) -> Result<()> {
   Err(format!("{}: links are only made on Unix", link.display()).into())
 }
 

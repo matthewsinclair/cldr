@@ -1,3 +1,4 @@
+pub mod briefing;
 pub mod calendar;
 pub mod check;
 pub mod cli;

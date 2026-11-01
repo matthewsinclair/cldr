@@ -5,7 +5,7 @@ use crate::config::{self, Config};
 use crate::doctor;
 use crate::export::{self, Period};
 use crate::zones::Zones;
-use crate::{check, journal, legacy, model, month, names, render};
+use crate::{briefing, check, journal, legacy, model, month, names, render};
 use jiff::ToSpan;
 use jiff::civil::Date;
 use std::path::PathBuf;
@@ -25,11 +25,17 @@ Usage: cldr [--config PATH] COMMAND
                          The totals and every flag, for reading; with
                          --activity-logs, each day and tag that differs from
                          the old Activity Logs. Writes nothing
-  render week|month [DATE] [--dry-run] [--no-calendar]
+  render week|month|year [DATE] [--dry-run] [--no-calendar]
                          Write the generated sections into the month's Day
                          Notes (only between cldr's markers) and the month's
                          JSON beside it; a week renders into the file of the
-                         month it starts in (default: last week, this month)
+                         month it starts in (default: last week, this month);
+                         year writes YYYY-hours-ytd.md at the journal root
+  briefing [DATE] [--dry-run]
+                         Write or refresh the Daily Briefing for DATE (default
+                         today, tomorrow from briefing.cutover_hour): the
+                         calendar lines and the configured blocks, between
+                         gen markers only
   month new [YYYY-MM] [--dry-run]
                          Start the month (default this month) from the
                          templates, move earlier months' files into
@@ -90,6 +96,7 @@ pub fn run(mut args: Vec<String>) -> Result<()> {
     "data" => data_command(explicit, args),
     "check" => check_command(explicit, args),
     "render" => render_command(explicit, args),
+    "briefing" => briefing_command(explicit, args),
     "month" => month_command(explicit, args),
     other => Err(format!("unknown command {other}; see cldr help").into()),
   }
@@ -140,6 +147,10 @@ fn period_args(args: &mut Vec<String>, zones: &Zones, usage: &str) -> Result<Per
     args.remove(0)
   };
   let date = match args.first() {
+    // A year may be named by its YYYY.
+    Some(text) if text.len() == "YYYY".len() => format!("{text}-01-01")
+      .parse::<Date>()
+      .map_err(|e| format!("{text}: expected YYYY ({e})"))?,
     // A month may be named by its YYYY-MM.
     Some(text) if text.len() == "YYYY-MM".len() => format!("{text}-01")
       .parse::<Date>()
@@ -349,7 +360,7 @@ fn render_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()
   let no_calendar = take_flag(&mut args, "--no-calendar");
   let config = Config::load(explicit.as_deref())?.config;
   let zones = config.zones()?;
-  let usage = "cldr render week|month [DATE] [--dry-run] [--no-calendar]";
+  let usage = "cldr render week|month|year [DATE] [--dry-run] [--no-calendar]";
   // A week with no date is last week.
   if args.len() == 1 && args[0] == "week" {
     args.push(today(&zones).saturating_sub(7.days()).to_string());
@@ -361,7 +372,7 @@ fn render_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()
       (monday.first_of_month(), Some(model::iso_week(monday)))
     }
     Period::Month(d) => (d.first_of_month(), None),
-    Period::Year(_) => return Err(usage.into()),
+    Period::Year(d) => return render_year(&config, d.year(), dry_run, no_calendar),
   };
   let (mut data, root) = build_data(&config, Period::Month(month), no_calendar)?;
   let (first, last) = Period::Month(month).days();
@@ -407,6 +418,23 @@ fn render_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()
   Ok(())
 }
 
+/// The year's hours report, written whole at the journal root.
+fn render_year(config: &Config, year: i16, dry_run: bool, no_calendar: bool) -> Result<()> {
+  let zones = config.zones()?;
+  let (data, root) = build_data(config, Period::Year(Date::new(year, 1, 1)?), no_calendar)?;
+  let today = today(&zones).min(Date::new(year, 12, 31)?);
+  let author = config.journal.author.as_deref().unwrap_or_default();
+  let doc = render::year_doc(&data, year, today, author);
+  let path = root.join(names::year_file(year));
+  if dry_run {
+    print!("{doc}");
+    return Ok(());
+  }
+  write_atomically(&path, &doc)?;
+  println!("{} written", names::year_file(year));
+  Ok(())
+}
+
 /// Write through a temporary file beside the target, so a reader never sees half a file.
 fn write_atomically(path: &std::path::Path, text: &str) -> Result<()> {
   let mut tmp = path.as_os_str().to_owned();
@@ -414,5 +442,74 @@ fn write_atomically(path: &std::path::Path, text: &str) -> Result<()> {
   let tmp = PathBuf::from(tmp);
   std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
   std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))?;
+  Ok(())
+}
+
+fn briefing_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()> {
+  let dry_run = take_flag(&mut args, "--dry-run");
+  let config = Config::load(explicit.as_deref())?.config;
+  let zones = config.zones()?;
+  let day = match args.as_slice() {
+    [] => {
+      let now = jiff::Timestamp::now();
+      let local = now.to_zoned(zones.at(now).clone());
+      if local.hour() >= config.briefing.cutover_hour {
+        local.date().saturating_add(1.day())
+      } else {
+        local.date()
+      }
+    }
+    [text] => text
+      .parse::<Date>()
+      .map_err(|e| format!("{text}: expected YYYY-MM-DD ({e})"))?,
+    _ => return Err("cldr briefing [DATE] [--dry-run]".into()),
+  };
+  let root = config
+    .journal_root()?
+    .ok_or("journal.root is not set in the config")?;
+  let name = names::month_file(day, briefing::DAILY_BRIEFING);
+  let path = root.join(&name);
+  let current = if path.exists() {
+    Some(std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?)
+  } else {
+    None
+  };
+  let (from, to) = briefing::window(day);
+  let events =
+    briefing::prepare(open_calendar(&config, zones)?.events(from, to, &filter(&config, false))?);
+  let mut blocks = Vec::new();
+  for block in &config.briefing.blocks {
+    blocks.push((block.clone(), briefing::run_block(block)?));
+  }
+  let author = config.journal.author.as_deref().unwrap_or_default();
+  let doc = briefing::build(current.as_deref(), day, author, &events, &blocks)?;
+  if dry_run {
+    print!("{doc}");
+    return Ok(());
+  }
+  write_atomically(&path, &doc)?;
+  for (link, kind) in &config.month.links {
+    if kind != briefing::DAILY_BRIEFING {
+      continue;
+    }
+    let link = root.join(link);
+    match std::fs::symlink_metadata(&link) {
+      Ok(meta) if meta.file_type().is_symlink() => {
+        if std::fs::read_link(&link)?.as_os_str() != name.as_str() {
+          std::fs::remove_file(&link)?;
+          month::symlink(&name, &link)?;
+        }
+      }
+      Ok(_) => println!(
+        "{} is a plain file; cldr month new replaces it safely",
+        link.display()
+      ),
+      Err(_) => month::symlink(&name, &link)?,
+    }
+  }
+  println!(
+    "briefing for {} written to {name}",
+    day.strftime("%a %-d %b")
+  );
   Ok(())
 }

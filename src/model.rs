@@ -893,6 +893,8 @@ mod tests {
       when: When::Timed { start, end },
       calendars: vec![],
       location: None,
+      link: None,
+      join: None,
       recurring: false,
       response: None,
       cancelled: false,

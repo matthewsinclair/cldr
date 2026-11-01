@@ -26,6 +26,11 @@ pub fn span(first: Date, last: Date) -> String {
 
 pub const DATA: &str = "data";
 
+/// A year's hours report, eg `2026-hours-ytd.md`.
+pub fn year_file(year: i16) -> String {
+  format!("{year}-hours-ytd.md")
+}
+
 /// A month's file of a kind, eg `20261101-20261130-day-notes.md`.
 pub fn month_file(date: Date, kind: &str) -> String {
   month_file_with(date, kind, "md")

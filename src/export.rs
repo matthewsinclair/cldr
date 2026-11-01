@@ -68,6 +68,8 @@ mod tests {
       when,
       calendars: vec![],
       location: None,
+      link: None,
+      join: None,
       recurring: false,
       response: None,
       cancelled: false,

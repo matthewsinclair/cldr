@@ -45,6 +45,10 @@ pub struct Event {
   /// Every calendar the event appears on, as "calendar (account)".
   pub calendars: Vec<String>,
   pub location: Option<String>,
+  /// The event in the calendar app, where the source has a URL for it.
+  pub link: Option<String>,
+  /// The video call to join: Zoom, Google Meet or Teams.
+  pub join: Option<String>,
   pub recurring: bool,
   pub response: Option<Response>,
   pub cancelled: bool,
