@@ -182,3 +182,4 @@ The old wraps are not run again. The first month `cldr` turns over is the first 
 - BusyCal's store is the first calendar source. EventKit (the macOS calendar layer) is the second, chosen in config, and becomes the default once it agrees with BusyCal across a year; no direct Google or Microsoft readers.
 - D3: zones are dated. The journal's wall-clock zone follows where the user was, from a dated list in the config.
 - The old week and month wraps are not run again; months wait for `cldr month new`.
+- File names: a date or date range, then a kebab-case kind: `20261101-20261130-day-notes.md`, `20261026-20261101-w44-calendar.csv`. The kind is what `[month.templates]` and `[month.links]` name. `src/names.rs` is the one place names are made and read.

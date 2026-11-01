@@ -28,8 +28,8 @@ pub struct Config {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MonthFiles {
-  /// Kind (eg "Day Notes") to its template, a file in `journal.templates`. A month's file of
-  /// that kind is `YYYYMMDD-YYYYMMDD <kind>.md` at the journal root.
+  /// Kind (eg "day-notes") to its template, a file in `journal.templates`. A month's file of
+  /// that kind is `YYYYMMDD-YYYYMMDD-<kind>.md` at the journal root.
   #[serde(default)]
   pub templates: BTreeMap<String, String>,
   /// Link at the journal root (eg "day_notes.md") to the kind it follows.

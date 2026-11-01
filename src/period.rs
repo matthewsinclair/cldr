@@ -33,18 +33,14 @@ impl Period {
     first.series(1.day()).take_while(move |d| *d <= last)
   }
 
-  /// The file's place in the journal: `YYYY/YYYYMM/` of the last day (a week's Sunday), and its name.
+  /// The calendar export's place in the journal: `YYYY/YYYYMM/` of the last day (a week's
+  /// Sunday), and its name.
   pub fn file(self, root: &Path) -> PathBuf {
-    let (first, last) = self.days();
-    let folder = root
+    let last = self.days().1;
+    root
       .join(last.strftime("%Y").to_string())
-      .join(last.strftime("%Y%m").to_string());
-    let span = format!("{}-{}", first.strftime("%Y%m%d"), last.strftime("%Y%m%d"));
-    let name = match self {
-      Period::Week(_) => format!("{span} [{:02}] Calendar.csv", first.iso_week_date().week()),
-      Period::Month(_) | Period::Year(_) => format!("{span} Calendar.csv"),
-    };
-    folder.join(name)
+      .join(last.strftime("%Y%m").to_string())
+      .join(crate::names::calendar_file(self))
   }
 }
 
@@ -62,12 +58,10 @@ mod tests {
     assert_eq!(first.saturating_add(6.days()), last);
     let path = Period::Week(wednesday).file(Path::new("/j"));
     let expected = format!(
-      "/j/{}/{}/{}-{} [{:02}] Calendar.csv",
+      "/j/{}/{}/{}",
       last.strftime("%Y"),
       last.strftime("%Y%m"),
-      first.strftime("%Y%m%d"),
-      last.strftime("%Y%m%d"),
-      first.iso_week_date().week()
+      crate::names::calendar_file(Period::Week(wednesday))
     );
     assert_eq!(path, PathBuf::from(expected));
     assert_ne!(first.month(), last.month());

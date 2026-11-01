@@ -753,11 +753,7 @@ mod tests {
   }
 
   fn month_file(date: Date, days: &[(Date, &[&str])]) -> Notes {
-    let name = format!(
-      "{}-{} Day Notes.md",
-      date.first_of_month().strftime("%Y%m%d"),
-      date.last_of_month().strftime("%Y%m%d")
-    );
+    let name = crate::names::month_file(date, crate::names::DAY_NOTES);
     file(&name, days)
   }
 

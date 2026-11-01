@@ -55,34 +55,18 @@ impl fmt::Display for Action {
   }
 }
 
+use crate::names::{self, DAY_NOTES};
+
 /// `YYYYMMDD-YYYYMMDD` for the month holding `date`.
 pub fn range(date: Date) -> String {
   let (first, last) = Period::Month(date).days();
-  format!("{}-{}", first.strftime("%Y%m%d"), last.strftime("%Y%m%d"))
+  names::span(first, last)
 }
 
-fn file_name(date: Date, kind: &str) -> String {
-  format!("{} {kind}.md", range(date))
-}
-
-/// The month a root file belongs to, from a name starting `YYYYMMDD-YYYYMMDD ` that spans
-/// exactly one calendar month.
+/// The month a root file belongs to: any file whose name starts with one calendar month's
+/// range, whatever its kind or extension.
 fn month_of(name: &str) -> Option<Date> {
-  let (span, rest) = name.split_at_checked("YYYYMMDD-YYYYMMDD".len())?;
-  if !rest.starts_with(' ') {
-    return None;
-  }
-  let (a, b) = span.split_once('-')?;
-  let date = |s: &str| -> Option<Date> {
-    let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<i16>().ok();
-    Date::new(
-      n(0..4)?,
-      i8::try_from(n(4..6)?).ok()?,
-      i8::try_from(n(6..8)?).ok()?,
-    )
-    .ok()
-  };
-  let (first, last) = (date(a)?, date(b)?);
+  let (first, last, _) = names::parse(name)?;
   (first == first.first_of_month() && last == first.last_of_month()).then_some(first)
 }
 
@@ -195,7 +179,7 @@ pub fn plan(setup: &Setup<'_>, month: Date) -> Result<Vec<Action>> {
   // 1. The month's own files.
   let mut created = Vec::new();
   for (kind, template) in &setup.files.templates {
-    let path = root.join(file_name(month, kind));
+    let path = root.join(names::month_file(month, kind));
     if path.exists() {
       actions.push(Action::Skip {
         path,
@@ -211,7 +195,7 @@ pub fn plan(setup: &Setup<'_>, month: Date) -> Result<Vec<Action>> {
       .map_err(|e| format!("{}: {e}", template_path.display()))?;
     let mut text = interpolate(&text, month, setup.author)
       .map_err(|e| format!("{}: {e}", template_path.display()))?;
-    if kind == "Day Notes"
+    if kind == DAY_NOTES
       && let Some(note) = spanning_note(month)
     {
       text = insert_under_title(&text, &note);
@@ -223,7 +207,7 @@ pub fn plan(setup: &Setup<'_>, month: Date) -> Result<Vec<Action>> {
   // 2. The links, checked before anything moves.
   for (link, kind) in &setup.files.links {
     let link_path = root.join(link);
-    let target = file_name(month, kind);
+    let target = names::month_file(month, kind);
     let target_path = root.join(&target);
     if !target_path.exists() && !created.contains(&target_path) {
       actions.push(Action::Skip {
@@ -243,7 +227,7 @@ pub fn plan(setup: &Setup<'_>, month: Date) -> Result<Vec<Action>> {
         let copy = std::fs::read(&link_path)?;
         let matched = month_files(root)?
           .into_iter()
-          .filter(|(name, _)| name.ends_with(&format!(" {kind}.md")))
+          .filter(|(name, _)| names::parse_month_file(name).is_some_and(|(_, k)| k == kind))
           .any(|(name, _)| std::fs::read(root.join(name)).is_ok_and(|t| t == copy));
         if !matched {
           return Err(
@@ -400,12 +384,12 @@ mod tests {
       )?;
       let files = MonthFiles {
         templates: BTreeMap::from([
-          ("Day Notes".to_owned(), "notes.md".to_owned()),
-          ("Link Dump".to_owned(), "links.md".to_owned()),
+          (DAY_NOTES.to_owned(), "notes.md".to_owned()),
+          ("link-dump".to_owned(), "links.md".to_owned()),
         ]),
         links: BTreeMap::from([
-          ("day_notes.md".to_owned(), "Day Notes".to_owned()),
-          ("briefing.md".to_owned(), "Briefing".to_owned()),
+          ("day_notes.md".to_owned(), DAY_NOTES.to_owned()),
+          ("briefing.md".to_owned(), "briefing".to_owned()),
         ]),
       };
       Ok(Journal {
@@ -469,28 +453,32 @@ mod tests {
     let october = Date::new(2026, 10, 1)?;
     let september = Date::new(2026, 9, 1)?;
     let old: Vec<String> = [
-      file_name(october, "Day Notes"),
-      file_name(october, "Briefing"),
-      file_name(september, "Briefing"),
+      names::month_file(october, DAY_NOTES),
+      names::month_file(october, "briefing"),
+      names::month_file(september, "briefing"),
     ]
     .into();
     for name in &old {
       j.write(name, name)?;
     }
-    j.write(&file_name(november, "Briefing"), "already started")?;
+    j.write(&names::month_file(november, "briefing"), "already started")?;
     // Sync made a copy of the link; it matches October's briefing, so it may go.
-    j.write("briefing.md", &file_name(october, "Briefing"))?;
+    j.write("briefing.md", &names::month_file(october, "briefing"))?;
     j.write("unrelated.md", "mine")?;
 
     let actions = plan(&j.setup(), november)?;
     apply(&j.root, &actions)?;
 
-    let notes = std::fs::read_to_string(j.root.join(file_name(november, "Day Notes")))?;
+    let notes = std::fs::read_to_string(j.root.join(names::month_file(november, DAY_NOTES)))?;
     assert!(notes.contains(&format!("# {} Day Notes\n\n<!-- Week", range(november))));
     assert!(notes.contains("A. Writer"));
-    assert!(j.root.join(file_name(november, "Link Dump")).exists());
+    assert!(
+      j.root
+        .join(names::month_file(november, "link-dump"))
+        .exists()
+    );
     assert_eq!(
-      std::fs::read_to_string(j.root.join(file_name(november, "Briefing")))?,
+      std::fs::read_to_string(j.root.join(names::month_file(november, "briefing")))?,
       "already started"
     );
     for name in &old {
@@ -506,7 +494,7 @@ mod tests {
     for (link, kind) in &j.files.links {
       assert_eq!(
         std::fs::read_link(j.root.join(link))?,
-        PathBuf::from(file_name(november, kind))
+        PathBuf::from(names::month_file(november, kind))
       );
     }
     assert!(j.root.join("unrelated.md").exists());
@@ -524,7 +512,7 @@ mod tests {
   fn a_plain_copy_of_a_link_that_matches_nothing_stops_the_plan() -> Result<()> {
     let j = Journal::new("copy")?;
     let november = Date::new(2026, 11, 1)?;
-    j.write(&file_name(november, "Briefing"), "new")?;
+    j.write(&names::month_file(november, "briefing"), "new")?;
     j.write("briefing.md", "written into the copy, nowhere else")?;
     assert!(plan(&j.setup(), november).is_err());
     j.done()
@@ -534,7 +522,7 @@ mod tests {
   fn a_move_onto_an_archived_file_stops_the_plan() -> Result<()> {
     let j = Journal::new("clash")?;
     let october = Date::new(2026, 10, 1)?;
-    let name = file_name(october, "Day Notes");
+    let name = names::month_file(october, DAY_NOTES);
     j.write(&name, "root copy")?;
     let folder = j.root.join("2026").join("202610");
     std::fs::create_dir_all(&folder)?;
@@ -545,10 +533,11 @@ mod tests {
 
   #[test]
   fn names_that_do_not_span_one_month_are_not_month_files() -> Result<()> {
-    assert!(month_of("20261001-20261031 Day Notes.md").is_some());
-    assert!(month_of("20261026-20261101 [44] Calendar.csv").is_none());
+    assert!(month_of("20261001-20261031-day-notes.md").is_some());
+    assert!(month_of("20261001-20261031-activity-log.md").is_some());
+    assert!(month_of("20261026-20261101-w44-calendar.csv").is_none());
     assert!(month_of("2026 Hours (YTD).md").is_none());
-    assert!(month_of("20261001-20261031Day Notes.md").is_none());
+    assert!(month_of("20261001-20261031 Day Notes.md").is_none());
     Ok(())
   }
 }

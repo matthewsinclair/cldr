@@ -67,9 +67,9 @@ mod tests {
   fn files_are_found_at_the_root_and_in_month_folders() -> Result<()> {
     let root = temp_root("walk")?;
     let names = [
-      "20261001-20261031 Day Notes.md",
-      "2026/202609/20260901-20260930 Day Notes.md",
-      "_Earlier/2025/202512/20251201-20251231 Day Notes.md",
+      "20261001-20261031-day-notes.md",
+      "2026/202609/20260901-20260930-day-notes.md",
+      "_Earlier/2025/202512/20251201-20251231-day-notes.md",
     ];
     for name in names {
       let path = root.join(name);
@@ -79,7 +79,7 @@ mod tests {
       std::fs::write(&path, "")?;
     }
     std::fs::write(root.join("day_notes.md"), "")?;
-    std::fs::write(root.join("20261001-20261031 Link Dump.md"), "")?;
+    std::fs::write(root.join("20261001-20261031-link-dump.md"), "")?;
     let found = day_notes_files(&root)?;
     assert_eq!(found.len(), names.len());
     let october = Date::new(2026, 10, 15)?;

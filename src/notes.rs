@@ -455,15 +455,11 @@ pub fn parse(text: &str, file: &Path) -> Notes {
   notes
 }
 
-/// The date range a Day Notes file's name declares: `YYYYMMDD-YYYYMMDD Day Notes.md`.
+/// The date range a Day Notes file's name declares: `YYYYMMDD-YYYYMMDD-day-notes.md`.
 pub fn file_range(path: &Path) -> Option<(Date, Date)> {
   let name = path.file_name()?.to_str()?;
-  let stem = name.strip_suffix(" Day Notes.md")?;
-  let (first, last) = stem.split_once('-')?;
-  if first.len() != 8 || last.len() != 8 {
-    return None;
-  }
-  Some((date_of(first).ok()?, date_of(last).ok()?))
+  let (first, last, rest) = crate::names::parse(name)?;
+  (rest == format!("{}.md", crate::names::DAY_NOTES)).then_some((first, last))
 }
 
 #[cfg(test)]
@@ -637,11 +633,7 @@ mod tests {
   fn a_file_name_declares_its_range() -> crate::Result<()> {
     let first = Date::new(2026, 10, 1)?;
     let last = first.last_of_month();
-    let name = format!(
-      "{}-{} Day Notes.md",
-      first.strftime("%Y%m%d"),
-      last.strftime("%Y%m%d")
-    );
+    let name = crate::names::month_file(first, crate::names::DAY_NOTES);
     assert_eq!(file_range(Path::new(&name)), Some((first, last)));
     assert_eq!(file_range(Path::new("day_notes.md")), None);
     Ok(())

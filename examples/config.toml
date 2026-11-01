@@ -36,10 +36,10 @@ max_gap_hours = 1.0
 # cldr month new: the files a month starts with (templates in journal.templates) and the links
 # at the journal root that follow the current month.
 [month.templates]
-"Day Notes" = "day-notes.md"
-"Link Dump" = "link-dump.md"
+"day-notes" = "day-notes.md"
+"link-dump" = "link-dump.md"
 
 [month.links]
-"day_notes.md" = "Day Notes"
-"link_dump.md" = "Link Dump"
-"daily_briefing.md" = "Daily Briefing"
+"day_notes.md" = "day-notes"
+"link_dump.md" = "link-dump"
+"daily_briefing.md" = "daily-briefing"
