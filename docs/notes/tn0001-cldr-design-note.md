@@ -1,6 +1,6 @@
 # TN0001: Cldr design note
 
-Status: design settled (D1, D2, D3); building. Build plan: [TN0002](tn0002-cldr-build-plan.md).
+Status: design settled (D1, D2, D3); building (step 2 done). Build plan: [TN0002](tn0002-cldr-build-plan.md).
 
 ## The problem
 
@@ -50,7 +50,16 @@ Each of these is a function with tests. Values in brackets come from config.
 - **Breaks**: not deducted; a session counts its span.
 - **Calendar overlaps**: on a calendar-only day, overlapping blocks count once (net distinct time), and the overlap is reported.
 - **Flags**: a weekday under the minimum [`rules.min_weekday_hours`]; a Day Notes row with a time range but no hours, or hours that disagree with the range; a gap between sources over the threshold [`rules.max_gap_hours`]; a tag spelt more than one way.
-- **Grid codes**: whole hours, floored: `0` to `9`, then `A` for 10 up to `K` for 20.
+- **Grid codes**: whole hours, floored: `0` to `9`, then `A` for 10 up to `K` for 20. Over 20 is `+`.
+
+Settled while building step 2:
+
+- **Unconfigured tags** are lower case; `[tags]` maps any case of a key, and of its value, to the value's spelling. A tag written without `@` gains it. The spelling flag looks at the Day Notes only.
+- **Written hours win** over a row's time range; a difference over a quarter of an hour (`HOURS_TOLERANCE`) is flagged. A row with a range and no hours takes the range, flagged; a row with neither counts nothing, flagged.
+- **Total rows** are not used; a total that differs from the sum of its rows is flagged.
+- **Calendar time** counts only when the title starts with a bracketed tag (`[Acme] Workshop` is `@acme`); untagged events are listed, not counted. The calendar speaks only for days up to today: planned time is not worked time.
+- **A day written in two files** (a spanning week's days often are) is read from the file whose name covers the date; a different copy elsewhere is flagged.
+- **Weeks are whole**: `data month` reads the whole weeks at either end, so a spanning week's summary is complete; the month's own totals and grid cover its own days.
 
 ## Outputs
 

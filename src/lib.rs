@@ -3,6 +3,10 @@ pub mod cli;
 pub mod config;
 pub mod doctor;
 pub mod export;
+pub mod journal;
+pub mod model;
+pub mod notes;
+pub mod period;
 pub mod zones;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;

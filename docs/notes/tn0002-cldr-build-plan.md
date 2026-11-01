@@ -1,6 +1,6 @@
 # TN0002: Cldr build plan
 
-Status: steps 0 and 1 done. Design: [TN0001](tn0001-cldr-design-note.md).
+Status: steps 0, 1 and 2 done; CI (step 0) still to add. Design: [TN0001](tn0001-cldr-design-note.md).
 
 Each step ends with something usable on a real journal, so the old tooling can be retired one piece at a time. Sizes are relative (S, M, L).
 
@@ -33,6 +33,8 @@ Done when: a week exported by `cldr` matches the same week read by the old reade
 - `cldr data week|month|year --json`.
 
 Done when: `cldr data month` for a real month gives totals that can be checked by hand against its Day Notes.
+
+Done: `notes` (the lenient parser, every departure reported with its line), `zones`, `model` (the rules, each with a test), `journal` (finding the files), `cldr data week|month|year [DATE] [--no-calendar]`. A real October agrees, day by day, with the Day Notes and with the old Activity Log's weekly tables wherever that log followed the notes.
 
 ## Step 3: the month lifecycle (S)
 

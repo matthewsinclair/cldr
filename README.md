@@ -2,7 +2,7 @@
 
 A re-runnable renderer for a plain-text time journal. Cldr reads the Day Notes you write and your calendar, and derives everything else from them: week and month summaries in the Day Notes, structured JSON, and the Daily Briefing's generated blocks. Rust. No language model anywhere in the pipeline.
 
-Status: early. `cldr export`, `cldr doctor` and `cldr paths` work; the rest is planned in [TN0002](docs/notes/tn0002-cldr-build-plan.md). The design is [TN0001](docs/notes/tn0001-cldr-design-note.md).
+Status: early. `cldr data`, `cldr export`, `cldr doctor` and `cldr paths` work; the rest is planned in [TN0002](docs/notes/tn0002-cldr-build-plan.md). The design is [TN0001](docs/notes/tn0001-cldr-design-note.md).
 
 ## Build and try
 
@@ -11,6 +11,7 @@ cargo build --release --locked
 cp examples/config.toml ~/.config/cldr/config.toml   # then edit
 target/release/cldr doctor
 target/release/cldr export week --stdout
+target/release/cldr data month 2026-10-01
 ```
 
 ## Configuration
