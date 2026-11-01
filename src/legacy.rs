@@ -164,13 +164,13 @@ mod tests {
   const LOG: &str = "## Time\n\n### 2026-10-05 (Week 41)\n\n#### Monday 2026-10-05\n\n\
     | Project | Time        | Hours | What  |\n\
     |---------|-------------|------:|-------|\n\
-    | @Zeop   | 09:00-11:00 |   2.0 | admin |\n\
-    | @Zeop   | 11:00-18:30 |   7.5 | build |\n\
+    | @Acme   | 09:00-11:00 |   2.0 | admin |\n\
+    | @Acme   | 11:00-18:30 |   7.5 | build |\n\
     | @Private| 19:00-20:00 |   1.0 | gym   |\n\
     |         |             |       |       |\n\
     | Total   |             |  10.5 |       |\n\n\
     #### Week 41 Summary\n\n\
-    | Project  | Mon | Total |\n|---|---:|---:|\n| @Zeop | 9.5 | 9.5 |\n";
+    | Project  | Mon | Total |\n|---|---:|---:|\n| @Acme | 9.5 | 9.5 |\n";
 
   #[test]
   fn day_tables_are_read_and_week_summaries_ignored() -> Result<()> {
@@ -195,13 +195,13 @@ mod tests {
     };
     let book = Rulebook::new(&tags, &bill, &rules);
     let by_tag = counted_by_tag(&days[0], &book);
-    let zeop: f64 = days[0]
+    let acme: f64 = days[0]
       .rows
       .iter()
-      .filter(|r| r.tag == "@Zeop")
+      .filter(|r| r.tag == "@Acme")
       .map(|r| r.hours)
       .sum();
-    assert_eq!(by_tag, BTreeMap::from([("@zeop".to_owned(), zeop)]));
+    assert_eq!(by_tag, BTreeMap::from([("@acme".to_owned(), acme)]));
     Ok(())
   }
 }
