@@ -5,7 +5,7 @@ use crate::config::{self, Config};
 use crate::doctor;
 use crate::export::{self, Period};
 use crate::zones::Zones;
-use crate::{check, journal, legacy, model, month};
+use crate::{check, journal, legacy, model, month, names, render};
 use jiff::ToSpan;
 use jiff::civil::Date;
 use std::path::PathBuf;
@@ -25,6 +25,11 @@ Usage: cldr [--config PATH] COMMAND
                          The totals and every flag, for reading; with
                          --activity-logs, each day and tag that differs from
                          the old Activity Logs. Writes nothing
+  render week|month [DATE] [--dry-run] [--no-calendar]
+                         Write the generated sections into the month's Day
+                         Notes (only between cldr's markers) and the month's
+                         JSON beside it; a week renders into the file of the
+                         month it starts in (default: last week, this month)
   month new [YYYY-MM] [--dry-run]
                          Start the month (default this month) from the
                          templates, move earlier months' files into
@@ -84,6 +89,7 @@ pub fn run(mut args: Vec<String>) -> Result<()> {
     "export" => export_command(explicit, args),
     "data" => data_command(explicit, args),
     "check" => check_command(explicit, args),
+    "render" => render_command(explicit, args),
     "month" => month_command(explicit, args),
     other => Err(format!("unknown command {other}; see cldr help").into()),
   }
@@ -134,6 +140,10 @@ fn period_args(args: &mut Vec<String>, zones: &Zones, usage: &str) -> Result<Per
     args.remove(0)
   };
   let date = match args.first() {
+    // A month may be named by its YYYY-MM.
+    Some(text) if text.len() == "YYYY-MM".len() => format!("{text}-01")
+      .parse::<Date>()
+      .map_err(|e| format!("{text}: expected YYYY-MM or YYYY-MM-DD ({e})"))?,
     Some(text) => text
       .parse::<Date>()
       .map_err(|e| format!("{text}: expected YYYY-MM-DD ({e})"))?,
@@ -332,4 +342,77 @@ fn month_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()>
     return Ok(());
   }
   month::apply(&root, &actions)
+}
+
+fn render_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()> {
+  let dry_run = take_flag(&mut args, "--dry-run");
+  let no_calendar = take_flag(&mut args, "--no-calendar");
+  let config = Config::load(explicit.as_deref())?.config;
+  let zones = config.zones()?;
+  let usage = "cldr render week|month [DATE] [--dry-run] [--no-calendar]";
+  // A week with no date is last week.
+  if args.len() == 1 && args[0] == "week" {
+    args.push(today(&zones).saturating_sub(7.days()).to_string());
+  }
+  let period = period_args(&mut args, &zones, usage)?;
+  let (month, week) = match period {
+    Period::Week(_) => {
+      let monday = period.days().0;
+      (monday.first_of_month(), Some(model::iso_week(monday)))
+    }
+    Period::Month(d) => (d.first_of_month(), None),
+    Period::Year(_) => return Err(usage.into()),
+  };
+  let (mut data, root) = build_data(&config, Period::Month(month), no_calendar)?;
+  let (first, last) = Period::Month(month).days();
+  let path = journal::day_notes_files(&root)?
+    .into_iter()
+    .find(|(_, a, b)| *a == first && *b == last)
+    .map(|(p, _, _)| p)
+    .ok_or_else(|| {
+      format!(
+        "no Day Notes for {} under {}",
+        month.strftime("%Y-%m"),
+        root.display()
+      )
+    })?;
+  let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+  let scope = match &week {
+    Some(id) => render::Scope::Week(id),
+    None => render::Scope::Month,
+  };
+  let rendered = render::render(&text, month, &data, today(&zones), scope);
+  model::relative_paths(&mut data, &root);
+  let json = serde_json::to_string_pretty(&data)? + "\n";
+  let json_path = path.with_file_name(names::month_file_with(month, names::DATA, "json"));
+  let shown = |p: &std::path::Path| p.strip_prefix(&root).unwrap_or(p).display().to_string();
+  if dry_run {
+    let state = if rendered == text {
+      "unchanged"
+    } else {
+      "would change"
+    };
+    println!("{} {state}", shown(&path));
+    println!("{} would be written", shown(&json_path));
+    return Ok(());
+  }
+  if rendered != text {
+    write_atomically(&path, &rendered)?;
+    println!("{} rendered", shown(&path));
+  } else {
+    println!("{} unchanged", shown(&path));
+  }
+  write_atomically(&json_path, &json)?;
+  println!("{} written", shown(&json_path));
+  Ok(())
+}
+
+/// Write through a temporary file beside the target, so a reader never sees half a file.
+fn write_atomically(path: &std::path::Path, text: &str) -> Result<()> {
+  let mut tmp = path.as_os_str().to_owned();
+  tmp.push(".cldr-tmp");
+  let tmp = PathBuf::from(tmp);
+  std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
+  std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))?;
+  Ok(())
 }

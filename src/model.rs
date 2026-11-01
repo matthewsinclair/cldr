@@ -207,7 +207,7 @@ fn weekend(date: Date) -> bool {
   matches!(date.weekday(), Weekday::Saturday | Weekday::Sunday)
 }
 
-fn iso_week(date: Date) -> String {
+pub fn iso_week(date: Date) -> String {
   let iso = date.iso_week_date();
   format!("{}-W{:02}", iso.year(), iso.week())
 }
@@ -601,6 +601,25 @@ fn carry_midnight(day: &mut Vec<Entry>, next: &mut Vec<Entry>, next_date: Date, 
     entry.carried_from = Some(next_date);
     entry.date = day_date;
     day.push(entry);
+  }
+}
+
+/// File paths in the data made relative to the journal root, for data kept in the journal.
+pub fn relative_paths(data: &mut Data, root: &std::path::Path) {
+  let relative = |p: &mut Option<PathBuf>| {
+    if let Some(path) = p
+      && let Ok(rel) = path.strip_prefix(root)
+    {
+      *path = rel.to_path_buf();
+    }
+  };
+  for day in &mut data.days {
+    for entry in &mut day.entries {
+      relative(&mut entry.file);
+    }
+  }
+  for flag in &mut data.flags {
+    relative(&mut flag.file);
   }
 }
 

@@ -11,6 +11,7 @@ pub mod month;
 pub mod names;
 pub mod notes;
 pub mod period;
+pub mod render;
 pub mod zones;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;

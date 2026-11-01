@@ -24,10 +24,17 @@ pub fn span(first: Date, last: Date) -> String {
   format!("{}-{}", first.strftime("%Y%m%d"), last.strftime("%Y%m%d"))
 }
 
+pub const DATA: &str = "data";
+
 /// A month's file of a kind, eg `20261101-20261130-day-notes.md`.
 pub fn month_file(date: Date, kind: &str) -> String {
+  month_file_with(date, kind, "md")
+}
+
+/// A month's file of a kind with another extension, eg `20261101-20261130-data.json`.
+pub fn month_file_with(date: Date, kind: &str, extension: &str) -> String {
   let (first, last) = Period::Month(date).days();
-  format!("{}-{kind}.md", span(first, last))
+  format!("{}-{kind}.{extension}", span(first, last))
 }
 
 /// A period's calendar export: a week carries its ISO week number.
