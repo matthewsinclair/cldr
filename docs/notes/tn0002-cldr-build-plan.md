@@ -1,6 +1,6 @@
 # TN0002: Cldr build plan
 
-Status: steps 0 to 3 done, with billable hours; v0.1.0 released; step 4 built, its differences being worked through. Design: [TN0001](tn0001-cldr-design-note.md).
+Status: steps 0 to 4 done, with billable hours; v0.1.0 released. Next: step 5. Design: [TN0001](tn0001-cldr-design-note.md).
 
 Each step ends with something usable on a real journal, so the old tooling can be retired one piece at a time. Sizes are relative (S, M, L).
 
@@ -63,7 +63,7 @@ Done when: the two sources agree across the year, and EventKit becomes the defau
 
 Done when: every difference across the year is explained.
 
-Built: `cldr check week|month|year [DATE] [--activity-logs] [--json]`, the old logs read by `legacy` (day tables only) and judged by the same `Rulebook` as the model; a new flag, `notes_overlap`, for Day Notes rows that count time twice. First run over 2026: 294 logged days compared, 262 agree; the 32 that differ are being worked through with the user.
+Built: `cldr check week|month|year [DATE] [--activity-logs] [--json]`, the old logs read by `legacy` (day tables only) and judged by the same `Rulebook` as the model; a new flag, `notes_overlap`, for Day Notes rows that count time twice. First run over 2026: 294 logged days compared, 262 agree. After working through them with the user (journal corrections from the old logs and the user's rulings, a `day_differs` fix in cldr), 268 agree, and each of the 26 that differ is explained: the old wrap retimed rows from the calendar, or the user retagged on purpose. Closed by the user at that point: the old logs were kept by hand, at pace, and agreement beyond this is not worth chasing. Three questions stay open in the journal, recorded as known: two January days with copied rows, some rows that may belong to a client tag, and a few placeholder rows with no time or hours.
 
 ## Step 5: rendering into the Day Notes (M)
 
