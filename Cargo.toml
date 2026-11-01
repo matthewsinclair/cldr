@@ -1,0 +1,29 @@
+[package]
+name = "cldr"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/matthewsinclair/cldr"
+description = "A re-runnable renderer for a plain-text time journal, from Day Notes and the calendar"
+
+[dependencies]
+# Human-editable configuration.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+# BusyCal's local Core Data store, opened read-only.
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Keyed archives inside the store (titles, calendar names, rule lists).
+plist = "1"
+# Zone-aware dates and times, including each event's own zone.
+jiff = { version = "0.2", features = ["serde"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[profile.dev]
+debug = "line-tables-only"

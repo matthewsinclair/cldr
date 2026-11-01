@@ -1,0 +1,25 @@
+# Example cldr configuration. Copy to ~/.config/cldr/config.toml and edit.
+# Every value here is a placeholder.
+
+[journal]
+root = "~/Documents/Journal"
+author = "Your Name"
+# timezone = "Europe/London"   # the machine's zone when absent
+templates = "~/.config/cldr/templates"
+
+[calendar]
+source = "busycal"
+include = ["you@example.com", "you@work.example"]
+exclude = ["Holidays"]
+me = ["you@example.com", "you@work.example"]
+
+[tags]
+"@acme" = "@Acme"
+"@self" = "@Self"
+
+[rules]
+exclude = ["[GYM]", "@personal"]
+zero_hours = ["Travel:"]
+weekday_only = ["@Acme"]
+min_weekday_hours = 8.0
+max_gap_hours = 1.0

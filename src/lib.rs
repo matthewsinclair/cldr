@@ -1,0 +1,13 @@
+pub mod calendar;
+pub mod cli;
+pub mod config;
+pub mod doctor;
+pub mod export;
+
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Never let configuration or calendar text inject terminal control sequences.
+pub fn clean(text: &str) -> String {
+  text.chars().filter(|c| !c.is_control()).collect()
+}
