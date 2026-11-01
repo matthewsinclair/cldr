@@ -1,6 +1,6 @@
 # TN0001: Cldr design note
 
-Status: design settled, ready to build (D1, D2). Build plan: [TN0002](tn0002-cldr-build-plan.md).
+Status: design settled (D1, D2, D3); building. Build plan: [TN0002](tn0002-cldr-build-plan.md).
 
 ## The problem
 
@@ -93,7 +93,7 @@ Nothing in a moved file is rewritten. The Link Dump in particular moves untouche
 
 ## Calendar access
 
-The source is BusyCal's local store: the union of the user's calendar accounts (Google, Microsoft 365 and any other BusyCal syncs), so one reader covers every account with no logins or tokens of its own. Config selects accounts and calendars by name. It is opened read-only (`?mode=ro`); `cldr` never writes to it. The reader sits behind a `CalendarSource` trait so that another source can be added without touching the rules. On macOS the store sits in another app's group container, which needs Full Disk Access for the terminal running `cldr`; an OS update can revoke it. `cldr doctor` checks access and names the setting when it is missing.
+The source is BusyCal's local store: the union of the user's calendar accounts (Google, Microsoft 365 and any other BusyCal syncs), so one reader covers every account with no logins or tokens of its own. Config selects accounts and calendars by name. It is opened read-only (`?mode=ro`); `cldr` never writes to it. The reader sits behind a `CalendarSource` trait so that another source can be added without touching the rules. BusyCal is only a viewer: the real sources are the user's accounts, and reading BusyCal's private cache ties `cldr` to that app's undocumented schema. The second source is EventKit, the macOS calendar layer those same accounts sync into, which also expands repeating events itself. Its bindings need `unsafe`; that is confined to one module with the crate otherwise forbidding it. On macOS the store sits in another app's group container, which needs Full Disk Access for the terminal running `cldr`; an OS update can revoke it. `cldr doctor` checks access and names the setting when it is missing.
 
 The store's schema is undocumented. What the reader relies on: events are `ZCOMMONDATA` rows (entity 5 an event, 6 a changed occurrence of a repeating event, 8 a calendar); times are stored as seconds since 2001 with a zone name; all-day events sit at noon UTC with an exclusive end; titles and calendar names are keyed archives; repeating events carry a rule (frequency, interval, count, until, by-day, by-month-day, by-month, set positions, exception dates) that the reader expands; the same invitation on two calendars shares a UID and is reported once; event status 7 is cancelled, attendee status 9 is declined.
 
@@ -105,8 +105,17 @@ TOML at `$XDG_CONFIG_HOME/cldr/config.toml` (default `~/.config/cldr/config.toml
 [journal]
 root = "~/Documents/Journal"
 author = "Your Name"            # verblock author in new files
-timezone = "Europe/London"      # optional; the machine's zone when absent
+timezone = "Europe/London"      # the default zone; the machine's zone when absent
 templates = "~/.config/cldr/templates"
+
+# Where you were: from each date on, the journal's wall clock is in this zone.
+[[journal.zones]]
+from = "2026-09-27"
+zone = "Pacific/Auckland"
+
+[[journal.zones]]
+from = "2026-12-20"
+zone = "Europe/London"
 
 [calendar]
 source = "busycal"
@@ -161,5 +170,6 @@ The old wraps are not run again. The first month `cldr` turns over is the first 
 - D2: one hand-written file per month. The Day Notes carry generated week and month sections; a JSON document per month carries the structured data; there is no Activity Log.
 - The old `timelog` and `convert_day_notes` commands are not carried over.
 - The current-briefing file stays a symlink, repointed each month.
-- BusyCal's store is the calendar source, covering every synced account; no direct Google or Microsoft readers in the first version.
+- BusyCal's store is the first calendar source. EventKit (the macOS calendar layer) is the second, chosen in config, and becomes the default once it agrees with BusyCal across a year; no direct Google or Microsoft readers.
+- D3: zones are dated. The journal's wall-clock zone follows where the user was, from a dated list in the config.
 - The old week and month wraps are not run again; months wait for `cldr month new`.

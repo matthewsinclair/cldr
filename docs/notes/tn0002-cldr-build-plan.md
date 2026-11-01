@@ -1,6 +1,6 @@
 # TN0002: Cldr build plan
 
-Status: in progress. Design: [TN0001](tn0001-cldr-design-note.md).
+Status: steps 0 and 1 done. Design: [TN0001](tn0001-cldr-design-note.md).
 
 Each step ends with something usable on a real journal, so the old tooling can be retired one piece at a time. Sizes are relative (S, M, L).
 
@@ -27,6 +27,7 @@ Done when: a week exported by `cldr` matches the same week read by the old reade
 
 ## Step 2: the Day Notes parser and the model (M)
 
+- Dated zones (D3): `[[journal.zones]]` in the config; every date resolves to the zone the user was in, and the calendar is read in it.
 - Parse each day's heading and `Time Log` table; keep the source line of every row for error messages.
 - Entries, days, weeks, months; tag normalisation; the rules in TN0001, each with tests.
 - `cldr data week|month|year --json`.
@@ -41,6 +42,14 @@ Brought forward: the old wraps are not run again, so months wait for this.
 - Turns over every month still waiting, oldest first.
 
 Done when: a month turns over with one command and nothing else to do by hand.
+
+## Step 3b: EventKit as a second source (M)
+
+- An EventKit reader behind `CalendarSource`, chosen by `calendar.source = "eventkit"`; the macOS permission prompt handled and reported by `doctor`.
+- Its `unsafe` bindings in one module; the rest of the crate keeps `unsafe_code` forbidden.
+- `cldr export` from both sources over every week of the year; every difference explained.
+
+Done when: the two sources agree across the year, and EventKit becomes the default.
 
 ## Step 4: the year check (M)
 
