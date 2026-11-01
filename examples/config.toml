@@ -26,6 +26,11 @@ me = ["you@example.com", "you@work.example"]
 "@acme" = "@Acme"
 "@self" = "@Self"
 
+# Billable fraction per tag, 0 to 1; unlisted tags bill nothing. A Day Notes table may add a
+# Bill column after Hours (| Project | Time | Hours | Bill | What |) to override a row.
+[bill]
+"@Acme" = 1.0
+
 [rules]
 exclude = ["[GYM]", "@personal"]
 zero_hours = ["Travel:"]

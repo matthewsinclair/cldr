@@ -18,6 +18,10 @@ pub struct Config {
   pub calendar: Calendar,
   #[serde(default)]
   pub tags: BTreeMap<String, String>,
+  /// Each tag's billable fraction, 0 to 1; a tag not listed bills nothing. A Day Notes row's
+  /// `Bill` cell overrides it.
+  #[serde(default)]
+  pub bill: BTreeMap<String, f64>,
   #[serde(default)]
   pub rules: Rules,
   #[serde(default)]
@@ -135,7 +139,11 @@ pub struct Loaded {
 
 impl Config {
   pub fn parse(text: &str) -> Result<Config> {
-    Ok(toml::from_str(text)?)
+    let config: Config = toml::from_str(text)?;
+    if let Some((tag, value)) = config.bill.iter().find(|(_, v)| !(0.0..=1.0).contains(*v)) {
+      return Err(format!("bill.\"{tag}\" = {value}: a fraction from 0 to 1").into());
+    }
+    Ok(config)
   }
 
   /// Load from an explicit path, `CLDR_CONFIG`, or the XDG default. A missing file is an empty config.
@@ -255,8 +263,15 @@ mod tests {
     assert!(!config.tags.is_empty());
     assert!(!config.journal.zones.is_empty());
     assert!(!config.month.templates.is_empty());
+    assert!(!config.bill.is_empty());
     config.zones()?;
     Ok(())
+  }
+
+  #[test]
+  fn a_billable_fraction_outside_0_to_1_is_refused() {
+    assert!(Config::parse("[bill]\n\"@a\" = 1.5\n").is_err());
+    assert!(Config::parse("[bill]\n\"@a\" = 0.5\n").is_ok());
   }
 
   #[test]

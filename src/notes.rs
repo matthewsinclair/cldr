@@ -49,6 +49,8 @@ pub struct Row {
   pub tag: String,
   pub span: Option<Span>,
   pub hours: Option<f64>,
+  /// The row's billable fraction, when the table has a `Bill` column and the cell is filled.
+  pub bill: Option<f64>,
   pub what: String,
 }
 
@@ -104,9 +106,13 @@ pub enum ProblemKind {
   OddHours,
   /// Hours that cannot be read.
   BadHours,
-  /// More than four cells in a row; the first four are read.
+  /// A billable fraction written as a percentage, read anyway.
+  OddBill,
+  /// A billable fraction that cannot be read, or is outside 0 to 1.
+  BadBill,
+  /// More cells in a row than its table has columns; the extra ones are ignored.
   ExtraCells,
-  /// Fewer than four cells in a row; the row is skipped.
+  /// Fewer cells in a row than its table has columns; the row is skipped.
   ShortRow,
   /// A time log table before any day heading.
   OutsideDay,
@@ -123,6 +129,8 @@ impl fmt::Display for ProblemKind {
       ProblemKind::BadTime => "unreadable time range",
       ProblemKind::OddHours => "hours read leniently",
       ProblemKind::BadHours => "unreadable hours",
+      ProblemKind::OddBill => "billable fraction read leniently",
+      ProblemKind::BadBill => "unreadable billable fraction",
       ProblemKind::ExtraCells => "extra cells",
       ProblemKind::ShortRow => "short row",
       ProblemKind::OutsideDay => "time log outside a day",
@@ -296,6 +304,70 @@ pub fn parse_hours(text: &str) -> Cell<f64> {
   }
 }
 
+/// Read a billable fraction, eg `0.5`; `50%` is read leniently.
+pub fn parse_bill(text: &str) -> Cell<f64> {
+  let text = text.trim();
+  if Cell::<f64>::is_empty_text(text) {
+    return Cell::Empty;
+  }
+  let (number, percent) = match text.strip_suffix('%') {
+    Some(n) => (n.trim(), true),
+    None => (text, false),
+  };
+  match number.parse::<f64>() {
+    Ok(n) if n.is_finite() => {
+      let fraction = if percent { n / 100.0 } else { n };
+      match (0.0..=1.0).contains(&fraction) {
+        true if percent => Cell::Lenient(fraction),
+        true => Cell::Plain(fraction),
+        false => Cell::Unreadable,
+      }
+    }
+    _ => Cell::Unreadable,
+  }
+}
+
+/// Where a time log table keeps each value: project, time and hours first, then an optional
+/// `Bill`, then what.
+#[derive(Debug, Clone, Copy)]
+struct Columns {
+  width: usize,
+  bill: Option<usize>,
+}
+
+impl Columns {
+  const PLAIN: usize = 4;
+
+  fn from_header(cells: &[String]) -> Columns {
+    let bill = cells
+      .get(Self::PLAIN - 1)
+      .is_some_and(|c| c.eq_ignore_ascii_case("bill"))
+      && cells.len() > Self::PLAIN;
+    if bill {
+      Columns {
+        width: Self::PLAIN + 1,
+        bill: Some(Self::PLAIN - 1),
+      }
+    } else {
+      Columns {
+        width: Self::PLAIN,
+        bill: None,
+      }
+    }
+  }
+
+  fn what(self) -> usize {
+    self.width - 1
+  }
+}
+
+enum Log {
+  Outside,
+  /// After a `Time Log` heading, before its table's header.
+  Heading,
+  Table(Columns),
+}
+
 fn report(problems: &mut Vec<Problem>, line: usize, kind: ProblemKind, text: &str) {
   problems.push(Problem {
     line,
@@ -326,13 +398,12 @@ pub fn parse(text: &str, file: &Path) -> Notes {
     file: file.to_path_buf(),
     ..Notes::default()
   };
-  // Inside a time log: None before its table, then whether the header has been seen.
-  let mut in_log: Option<bool> = None;
+  let mut log = Log::Outside;
   for (index, line) in text.lines().enumerate() {
     let number = index + 1;
     let trimmed = line.trim();
     if trimmed.starts_with('#') {
-      in_log = None;
+      log = Log::Outside;
       match heading(trimmed) {
         Some(Heading::Day(Ok(date), word)) => {
           if !word.eq_ignore_ascii_case(weekday_name(date.weekday())) {
@@ -375,45 +446,45 @@ pub fn parse(text: &str, file: &Path) -> Notes {
               trimmed,
             );
           } else {
-            in_log = Some(false);
+            log = Log::Heading;
           }
         }
         Some(Heading::Other) | None => {}
       }
       continue;
     }
-    let Some(seen_header) = in_log else {
-      continue;
-    };
-    if trimmed.is_empty() {
+    if matches!(log, Log::Outside) || trimmed.is_empty() {
       continue;
     }
     if !trimmed.starts_with('|') {
-      if seen_header {
-        in_log = None;
+      if matches!(log, Log::Table(_)) {
+        log = Log::Outside;
       }
       continue;
     }
     let mut row = cells(trimmed);
-    if !seen_header {
-      in_log = Some(true);
-      continue;
-    }
+    let columns = match log {
+      Log::Table(columns) => columns,
+      Log::Heading | Log::Outside => {
+        log = Log::Table(Columns::from_header(&row));
+        continue;
+      }
+    };
     if is_separator(&row) {
       continue;
     }
-    if row.len() < 4 {
+    if row.len() < columns.width {
       report(&mut notes.problems, number, ProblemKind::ShortRow, trimmed);
       continue;
     }
-    if row.len() > 4 {
+    if row.len() > columns.width {
       report(
         &mut notes.problems,
         number,
         ProblemKind::ExtraCells,
         trimmed,
       );
-      row.truncate(4);
+      row.truncate(columns.width);
     }
     let span = read(
       parse_span(&row[1]),
@@ -429,11 +500,20 @@ pub fn parse(text: &str, file: &Path) -> Notes {
       (ProblemKind::OddHours, ProblemKind::BadHours),
       &row[2],
     );
+    let bill = columns.bill.and_then(|i| {
+      read(
+        parse_bill(&row[i]),
+        &mut notes.problems,
+        number,
+        (ProblemKind::OddBill, ProblemKind::BadBill),
+        &row[i],
+      )
+    });
     let Some(day) = notes.days.last_mut() else {
       continue;
     };
     let tag = crate::clean(&row[0]);
-    let what = crate::clean(&row[3]);
+    let what = crate::clean(&row[columns.what()]);
     if tag.is_empty() {
       // The total row; a row with neither tag nor hours is an empty placeholder.
       if let Some(hours) = hours {
@@ -449,6 +529,7 @@ pub fn parse(text: &str, file: &Path) -> Notes {
       tag,
       span,
       hours,
+      bill,
       what,
     });
   }
@@ -636,6 +717,29 @@ mod tests {
     let name = crate::names::month_file(first, crate::names::DAY_NOTES);
     assert_eq!(file_range(Path::new(&name)), Some((first, last)));
     assert_eq!(file_range(Path::new("day_notes.md")), None);
+    Ok(())
+  }
+
+  #[test]
+  fn a_bill_column_is_read_where_the_header_puts_it() -> crate::Result<()> {
+    let date = Date::new(2026, 11, 2)?;
+    let text = format!(
+      "{}\n\n#### Time Log\n\n| Project | Time | Hours | Bill | What |\n|---|---|---|---|---|\n\
+       | @a | 09:00-10:00 | 1.0 | 0.5 | travel |\n\
+       | @a | 10:00-11:00 | 1.0 |     | default |\n\
+       | @a | 11:00-12:00 | 1.0 | 50% | percent |\n\
+       | @a | 12:00-13:00 | 1.0 | 2   | too much |\n\
+       |    |             | 4.0 |     |  |\n",
+      heading_for(date)
+    );
+    let notes = parsed(&text);
+    let rows = &notes.days[0].rows;
+    let bills: Vec<Option<f64>> = rows.iter().map(|r| r.bill).collect();
+    assert_eq!(bills, vec![Some(0.5), None, Some(0.5), None]);
+    assert_eq!(rows[0].what, "travel");
+    let kinds: Vec<ProblemKind> = notes.problems.iter().map(|p| p.kind).collect();
+    assert_eq!(kinds, vec![ProblemKind::OddBill, ProblemKind::BadBill]);
+    assert_eq!(notes.days[0].total.as_ref().map(|t| t.hours), Some(4.0));
     Ok(())
   }
 }

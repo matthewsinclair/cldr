@@ -235,6 +235,7 @@ fn data_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()> 
     notes: &notes,
     calendar: events.as_deref(),
     tags: &config.tags,
+    bill: &config.bill,
     rules: &config.rules,
     today,
   });

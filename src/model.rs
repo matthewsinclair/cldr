@@ -32,6 +32,10 @@ pub struct Entry {
   pub source: Source,
   /// False for time that is not work (excluded tags and titles, holds, untagged calendar time).
   pub counted: bool,
+  /// The billable fraction: the row's `Bill` cell, else the tag's configured fraction, else 0.
+  pub bill: f64,
+  /// Hours times the fraction, for counted time; otherwise 0.
+  pub billable: f64,
   /// Moved from the next date by the midnight rule.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub carried_from: Option<Date>,
@@ -55,14 +59,70 @@ pub struct Flag {
   pub line: Option<usize>,
 }
 
+/// Hours and billable hours, in all and per tag. Only counted time is in them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Totals {
+  pub hours: f64,
+  pub by_tag: BTreeMap<String, f64>,
+  pub billable: f64,
+  pub billable_by_tag: BTreeMap<String, f64>,
+}
+
+impl Totals {
+  fn add(&mut self, tag: &str, hours: f64, billable: f64) {
+    *self.by_tag.entry(tag.to_owned()).or_default() += hours;
+    *self.billable_by_tag.entry(tag.to_owned()).or_default() += billable;
+  }
+
+  /// Rounded, with the sums taken from the rounded tags so they always add up.
+  fn finish(self) -> Totals {
+    let by_tag: BTreeMap<String, f64> = self
+      .by_tag
+      .into_iter()
+      .map(|(t, h)| (t, round(h)))
+      .collect();
+    let billable_by_tag: BTreeMap<String, f64> = self
+      .billable_by_tag
+      .into_iter()
+      .filter(|(_, h)| *h != 0.0)
+      .map(|(t, h)| (t, round(h)))
+      .collect();
+    Totals {
+      hours: round(by_tag.values().sum()),
+      billable: round(billable_by_tag.values().sum()),
+      by_tag,
+      billable_by_tag,
+    }
+  }
+
+  fn of_entries(entries: &[Entry]) -> Totals {
+    let mut t = Totals::default();
+    for e in entries.iter().filter(|e| e.counted) {
+      t.add(&e.tag, e.hours, e.billable);
+    }
+    t.finish()
+  }
+
+  fn of_days(days: &[&Day]) -> Totals {
+    let mut t = Totals::default();
+    for d in days {
+      for (tag, hours) in &d.totals.by_tag {
+        let billable = d.totals.billable_by_tag.get(tag).copied().unwrap_or(0.0);
+        t.add(tag, *hours, billable);
+      }
+    }
+    t.finish()
+  }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Day {
   pub date: Date,
   pub weekday: &'static str,
   pub source: Option<Source>,
-  pub hours: f64,
   pub code: char,
-  pub by_tag: BTreeMap<String, f64>,
+  #[serde(flatten)]
+  pub totals: Totals,
   pub entries: Vec<Entry>,
 }
 
@@ -71,8 +131,8 @@ pub struct Week {
   pub week: String,
   pub first: Date,
   pub last: Date,
-  pub hours: f64,
-  pub by_tag: BTreeMap<String, f64>,
+  #[serde(flatten)]
+  pub totals: Totals,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -80,8 +140,8 @@ pub struct Month {
   pub month: String,
   pub first: Date,
   pub last: Date,
-  pub hours: f64,
-  pub by_tag: BTreeMap<String, f64>,
+  #[serde(flatten)]
+  pub totals: Totals,
   /// The weeks summarised in this month: those that start in it.
   pub weeks: Vec<String>,
   /// One grid code per day of the month.
@@ -92,8 +152,8 @@ pub struct Month {
 pub struct Data {
   pub first: Date,
   pub last: Date,
-  pub hours: f64,
-  pub by_tag: BTreeMap<String, f64>,
+  #[serde(flatten)]
+  pub totals: Totals,
   pub days: Vec<Day>,
   pub weeks: Vec<Week>,
   pub months: Vec<Month>,
@@ -107,6 +167,8 @@ pub struct Inputs<'a> {
   /// None when the calendar was not read.
   pub calendar: Option<&'a [Event]>,
   pub tags: &'a BTreeMap<String, String>,
+  /// Billable fraction per tag.
+  pub bill: &'a BTreeMap<String, f64>,
   pub rules: &'a Rules,
   /// Days after this take nothing from the calendar and have no flags for missing time.
   pub today: Date,
@@ -204,6 +266,8 @@ struct Builder<'a> {
   inputs: &'a Inputs<'a>,
   tags: Tags<'a>,
   excluded_tags: BTreeSet<String>,
+  /// Billable fraction by normalised tag.
+  bill: BTreeMap<String, f64>,
   flags: Vec<Flag>,
   spellings: BTreeMap<String, BTreeSet<String>>,
 }
@@ -245,6 +309,10 @@ impl<'a> Builder<'a> {
       .or_default()
       .insert(raw.trim().to_owned());
     tag
+  }
+
+  fn bill_for(&self, tag: &str) -> f64 {
+    self.bill.get(tag).copied().unwrap_or(0.0)
   }
 
   fn excluded(&self, tag: &str, what: &str) -> bool {
@@ -333,6 +401,7 @@ impl<'a> Builder<'a> {
       };
       sum += row.hours.unwrap_or(0.0);
       let counted = !self.excluded(&tag, &row.what);
+      let bill = row.bill.unwrap_or_else(|| self.bill_for(&tag));
       entries.push(Entry {
         date: day.date,
         start: row.span.map(|s| clock(s.start)),
@@ -342,6 +411,8 @@ impl<'a> Builder<'a> {
         what: row.what.clone(),
         source: Source::Notes,
         counted,
+        bill,
+        billable: if counted { hours * bill } else { 0.0 },
         carried_from: None,
         file: Some(file.file.clone()),
         line: Some(row.line),
@@ -407,19 +478,24 @@ impl<'a> Builder<'a> {
       } else {
         0
       };
+      let hours = if counted {
+        f64::from(net) / 60.0
+      } else {
+        f64::from(span.minutes()) / 60.0
+      };
+      let tag = tag.unwrap_or_default();
+      let bill = self.bill_for(&tag);
       entries.push(Entry {
         date,
         start: Some(clock(span.start)),
         end: Some(clock(span.end)),
-        hours: if counted {
-          f64::from(net) / 60.0
-        } else {
-          f64::from(span.minutes()) / 60.0
-        },
-        tag: tag.unwrap_or_default(),
+        hours,
+        tag,
         what: title,
         source: Source::Calendar,
         counted,
+        bill,
+        billable: if counted { hours * bill } else { 0.0 },
         carried_from: None,
         file: None,
         line: None,
@@ -460,19 +536,12 @@ fn carry_midnight(day: &mut Vec<Entry>, next: &mut Vec<Entry>, next_date: Date, 
   }
 }
 
-fn add(by_tag: &mut BTreeMap<String, f64>, tag: &str, hours: f64) {
-  *by_tag.entry(tag.to_owned()).or_default() += hours;
-}
-
-fn rounded(by_tag: BTreeMap<String, f64>) -> BTreeMap<String, f64> {
-  by_tag.into_iter().map(|(t, h)| (t, round(h))).collect()
-}
-
 pub fn build(inputs: &Inputs<'_>) -> Data {
   let mut builder = Builder {
     inputs,
     tags: Tags::new(inputs.tags),
     excluded_tags: BTreeSet::new(),
+    bill: BTreeMap::new(),
     flags: Vec::new(),
     spellings: BTreeMap::new(),
   };
@@ -484,6 +553,11 @@ pub fn build(inputs: &Inputs<'_>) -> Data {
     .map(|e| builder.tags.normalise(e).to_lowercase())
     .collect();
   builder.excluded_tags = excluded;
+  builder.bill = inputs
+    .bill
+    .iter()
+    .map(|(tag, fraction)| (builder.tags.normalise(tag), *fraction))
+    .collect();
 
   let (first, last) = inputs.period.days();
   // Whole weeks, so a week at either end is summarised in full; then one day either side, for
@@ -589,11 +663,8 @@ pub fn build(inputs: &Inputs<'_>) -> Data {
     if date < span_first || date > span_last {
       continue;
     }
-    let mut by_tag = BTreeMap::new();
-    for e in entries.iter().filter(|e| e.counted) {
-      add(&mut by_tag, &e.tag, e.hours);
-    }
-    let hours = round(by_tag.values().sum());
+    let totals = Totals::of_entries(&entries);
+    let hours = totals.hours;
     let past = date <= inputs.today;
     if past && !weekend(date) {
       if source.is_none() {
@@ -617,7 +688,7 @@ pub fn build(inputs: &Inputs<'_>) -> Data {
         .iter()
         .map(|t| builder.tags.normalise(t))
         .collect();
-      for tag in by_tag.keys().filter(|t| weekday_only.contains(*t)) {
+      for tag in totals.by_tag.keys().filter(|t| weekday_only.contains(*t)) {
         builder.flag(
           "weekend_tag",
           Some(date),
@@ -636,9 +707,8 @@ pub fn build(inputs: &Inputs<'_>) -> Data {
       date,
       weekday: weekday_name(date.weekday()),
       source,
-      hours,
       code: grid_code(hours),
-      by_tag: rounded(by_tag),
+      totals,
       entries,
     });
   }
@@ -654,16 +724,6 @@ pub fn build(inputs: &Inputs<'_>) -> Data {
     }
   }
 
-  let sum_days = |days: &[&Day]| {
-    let mut by_tag = BTreeMap::new();
-    for d in days {
-      for (t, h) in &d.by_tag {
-        add(&mut by_tag, t, *h);
-      }
-    }
-    (round(by_tag.values().sum()), rounded(by_tag))
-  };
-
   let mut weeks = Vec::new();
   let mut monday = span_first;
   while monday <= span_last {
@@ -672,13 +732,11 @@ pub fn build(inputs: &Inputs<'_>) -> Data {
       .iter()
       .filter(|d| d.date >= monday && d.date <= sunday)
       .collect();
-    let (hours, by_tag) = sum_days(&in_week);
     weeks.push(Week {
       week: iso_week(monday),
       first: monday,
       last: sunday,
-      hours,
-      by_tag,
+      totals: Totals::of_days(&in_week),
     });
     monday = monday.saturating_add(7.days());
   }
@@ -692,13 +750,11 @@ pub fn build(inputs: &Inputs<'_>) -> Data {
       .filter(|d| d.date >= start && d.date <= end && in_period(d.date))
       .collect();
     if !in_month.is_empty() {
-      let (hours, by_tag) = sum_days(&in_month);
       months.push(Month {
         month: start.strftime("%Y-%m").to_string(),
         first: start,
         last: end,
-        hours,
-        by_tag,
+        totals: Totals::of_days(&in_month),
         weeks: weeks
           .iter()
           .filter(|w| w.first >= start && w.first <= end)
@@ -711,15 +767,14 @@ pub fn build(inputs: &Inputs<'_>) -> Data {
   }
 
   let all: Vec<&Day> = days.iter().filter(|d| in_period(d.date)).collect();
-  let (hours, by_tag) = sum_days(&all);
+  let totals = Totals::of_days(&all);
   let mut flags = builder.flags;
   flags.retain(|f| f.date.is_none_or(in_period));
   flags.sort_by(|a, b| (a.date, a.kind).cmp(&(b.date, b.kind)));
   Data {
     first,
     last,
-    hours,
-    by_tag,
+    totals,
     days,
     weeks,
     months,
@@ -777,6 +832,7 @@ mod tests {
     notes: Vec<Notes>,
     calendar: Option<Vec<Event>>,
     tags: BTreeMap<String, String>,
+    bill: BTreeMap<String, f64>,
     rules: Rules,
   }
 
@@ -787,6 +843,7 @@ mod tests {
         notes,
         calendar: None,
         tags: BTreeMap::new(),
+        bill: BTreeMap::new(),
         rules: Rules::default(),
       }
     }
@@ -801,6 +858,7 @@ mod tests {
         notes: &self.notes,
         calendar: self.calendar.as_deref(),
         tags: &self.tags,
+        bill: &self.bill,
         rules: &self.rules,
         today,
       })
@@ -841,8 +899,8 @@ mod tests {
     case.tags.insert("@acmee".into(), "@Acme".into());
     let data = case.build();
     let d = day(&data, date).ok_or("day")?;
-    assert_eq!(d.by_tag.keys().collect::<Vec<_>>(), vec!["@Acme"]);
-    assert_eq!(d.hours, rows.len() as f64);
+    assert_eq!(d.totals.by_tag.keys().collect::<Vec<_>>(), vec!["@Acme"]);
+    assert_eq!(d.totals.hours, rows.len() as f64);
     assert!(kinds(&data, None).contains(&"tag_spellings"));
     Ok(())
   }
@@ -859,7 +917,7 @@ mod tests {
     case.rules.exclude = vec!["@Self".into(), "[gym]".into()];
     let data = case.build();
     let d = day(&data, date).ok_or("day")?;
-    assert_eq!(d.hours, 8.0);
+    assert_eq!(d.totals.hours, 8.0);
     assert_eq!(d.entries.iter().filter(|e| !e.counted).count(), 2);
     Ok(())
   }
@@ -874,7 +932,7 @@ mod tests {
     );
     case.rules.weekday_only = vec!["@ACME".into()];
     let data = case.build();
-    assert_eq!(day(&data, saturday).map(|d| d.hours), Some(2.0));
+    assert_eq!(day(&data, saturday).map(|d| d.totals.hours), Some(2.0));
     assert!(kinds(&data, Some(saturday)).contains(&"weekend_tag"));
     Ok(())
   }
@@ -886,8 +944,8 @@ mod tests {
     let rows: &[&str] = &["| @a | 21:30-03:00 | 5.5 | late |"];
     let case = Case::new(Period::Week(date), vec![month_file(date, &[(date, rows)])]);
     let data = case.build();
-    assert_eq!(day(&data, date).map(|d| d.hours), Some(5.5));
-    assert_eq!(day(&data, next).map(|d| d.hours), Some(0.0));
+    assert_eq!(day(&data, date).map(|d| d.totals.hours), Some(5.5));
+    assert_eq!(day(&data, next).map(|d| d.totals.hours), Some(0.0));
     Ok(())
   }
 
@@ -909,7 +967,7 @@ mod tests {
     );
     let data = Case::new(Period::Week(last), vec![october, november]).build();
     let before = day(&data, last).ok_or("day")?;
-    assert_eq!(before.hours, 4.0);
+    assert_eq!(before.totals.hours, 4.0);
     assert!(
       before
         .entries
@@ -918,7 +976,7 @@ mod tests {
         .count()
         == 2
     );
-    assert_eq!(day(&data, first).map(|d| d.hours), Some(1.0));
+    assert_eq!(day(&data, first).map(|d| d.totals.hours), Some(1.0));
     Ok(())
   }
 
@@ -934,8 +992,8 @@ mod tests {
       ],
     );
     let data = Case::new(Period::Week(date), vec![notes]).build();
-    assert_eq!(day(&data, date).map(|d| d.hours), Some(2.0));
-    assert_eq!(day(&data, next).map(|d| d.hours), Some(1.0));
+    assert_eq!(day(&data, date).map(|d| d.totals.hours), Some(2.0));
+    assert_eq!(day(&data, next).map(|d| d.totals.hours), Some(1.0));
     Ok(())
   }
 
@@ -957,15 +1015,15 @@ mod tests {
     let d = day(&data, bare).ok_or("day")?;
     assert_eq!(d.source, Some(Source::Calendar));
     // 09:00 to 12:00 net; the hold and the untagged lunch count nothing.
-    assert_eq!(d.hours, 3.0);
-    assert_eq!(d.by_tag.get("@a"), Some(&2.0));
-    assert_eq!(d.by_tag.get("@b"), Some(&1.0));
+    assert_eq!(d.totals.hours, 3.0);
+    assert_eq!(d.totals.by_tag.get("@a"), Some(&2.0));
+    assert_eq!(d.totals.by_tag.get("@b"), Some(&1.0));
     let flags = kinds(&data, Some(bare));
     assert!(flags.contains(&"calendar_overlap"));
     assert!(flags.contains(&"calendar_only"));
     let n = day(&data, noted).ok_or("day")?;
     assert_eq!(n.source, Some(Source::Notes));
-    assert_eq!(n.hours, 8.0);
+    assert_eq!(n.totals.hours, 8.0);
     assert!(kinds(&data, Some(noted)).contains(&"sources_differ"));
     Ok(())
   }
@@ -984,7 +1042,7 @@ mod tests {
     for kind in ["hours_disagree", "no_hours", "total_disagrees"] {
       assert!(flags.contains(&kind), "{kind} in {flags:?}");
     }
-    assert_eq!(day(&data, date).map(|d| d.hours), Some(2.0));
+    assert_eq!(day(&data, date).map(|d| d.totals.hours), Some(2.0));
     Ok(())
   }
 
@@ -999,13 +1057,13 @@ mod tests {
     let november = month_file(sunday, &[(sunday, &["| @a | 09:00-11:00 | 2.0 | y |"])]);
     let data = Case::new(Period::Month(wednesday), vec![october, november]).build();
     let month = data.months.first().ok_or("month")?;
-    assert_eq!(month.hours, 1.0);
+    assert_eq!(month.totals.hours, 1.0);
     assert_eq!(
       month.grid.chars().count(),
       usize::from(wednesday.days_in_month() as u8)
     );
     let spanning = data.weeks.iter().find(|w| w.last == sunday).ok_or("week")?;
-    assert_eq!(spanning.hours, 3.0);
+    assert_eq!(spanning.totals.hours, 3.0);
     assert!(month.weeks.contains(&spanning.week));
     let first_week = data.weeks.first().ok_or("week")?;
     assert!(first_week.first < wednesday.first_of_month());
@@ -1022,7 +1080,7 @@ mod tests {
     );
     let own = month_file(date, &[(date, &["| @a | 09:00-12:00 | 3.0 | final |"])]);
     let data = Case::new(Period::Week(date), vec![previous, own]).build();
-    assert_eq!(day(&data, date).map(|d| d.hours), Some(3.0));
+    assert_eq!(day(&data, date).map(|d| d.totals.hours), Some(3.0));
     assert!(kinds(&data, Some(date)).contains(&"day_differs"));
     Ok(())
   }
@@ -1036,8 +1094,45 @@ mod tests {
     let data = case.build_on(today);
     let d = day(&data, tomorrow).ok_or("day")?;
     assert_eq!(d.source, None);
-    assert_eq!(d.hours, 0.0);
+    assert_eq!(d.totals.hours, 0.0);
     assert!(kinds(&data, Some(tomorrow)).is_empty());
+    Ok(())
+  }
+
+  #[test]
+  fn billable_hours_take_the_row_s_bill_else_the_tag_s() -> Result<()> {
+    let date = Date::new(2026, 11, 2)?;
+    let text = format!(
+      "#### {} {}\n\n#### Time Log\n\n| Project | Time | Hours | Bill | What |\n|---|---|---|---|---|\n\
+       | @a | 08:00-10:00 | 2.0 | 0.5 | travel |\n\
+       | @a | 10:00-16:00 | 6.0 |     | work |\n\
+       | @b | 16:00-17:00 | 1.0 |     | own time |\n\
+       | @x | 17:00-18:00 | 1.0 | 1.0 | excluded, so not billed |\n",
+      date.strftime("%Y%m%d"),
+      weekday_name(date.weekday())
+    );
+    let notes = notes::parse(
+      &text,
+      Path::new(&crate::names::month_file(date, crate::names::DAY_NOTES)),
+    );
+    let mut case = Case::new(Period::Week(date), vec![notes]);
+    let full = 1.0;
+    case.bill.insert("@A".into(), full);
+    case.rules.exclude = vec!["@x".into()];
+    let data = case.build();
+    let d = day(&data, date).ok_or("day")?;
+    let travel = 2.0 * 0.5;
+    let work = 6.0 * full;
+    assert_eq!(d.totals.billable_by_tag.get("@a"), Some(&(travel + work)));
+    assert_eq!(d.totals.billable_by_tag.get("@b"), None);
+    assert_eq!(d.totals.billable, travel + work);
+    assert_eq!(d.totals.hours, 9.0);
+    let week = data
+      .weeks
+      .iter()
+      .find(|w| w.first <= date && date <= w.last)
+      .ok_or("week")?;
+    assert_eq!(week.totals.billable, d.totals.billable);
     Ok(())
   }
 }

@@ -59,6 +59,7 @@ Settled while building step 2:
 - **Total rows** are not used; a total that differs from the sum of its rows is flagged.
 - **Calendar time** counts only when the title starts with a bracketed tag (`[Acme] Workshop` is `@acme`); untagged events are listed, not counted. The calendar speaks only for days up to today: planned time is not worked time.
 - **A day written in two files** (a spanning week's days often are) is read from the file whose name covers the date; a different copy elsewhere is flagged.
+- **Billable hours** (hv, option 2): `[bill]` gives each tag a fraction from 0 to 1 (unlisted tags bill nothing), and a Time Log table may add a `Bill` column after Hours (`| Project | Time | Hours | Bill | What |`) to override a row, eg `0.5` for travel. Tables without the column stay valid. Billable hours are hours times the fraction, for counted time only; every total carries `billable` and `billable_by_tag` beside `hours` and `by_tag`. Turning billable hours into days for a day-rate client is the timesheet's job, not cldr's.
 - **Weeks are whole**: `data month` reads the whole weeks at either end, so a spanning week's summary is complete; the month's own totals and grid cover its own days.
 
 ## Outputs
