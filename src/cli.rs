@@ -5,7 +5,7 @@ use crate::config::{self, Config};
 use crate::doctor;
 use crate::export::{self, Period};
 use crate::zones::Zones;
-use crate::{journal, model, month};
+use crate::{check, journal, legacy, model, month};
 use jiff::ToSpan;
 use jiff::civil::Date;
 use std::path::PathBuf;
@@ -21,6 +21,10 @@ Usage: cldr [--config PATH] COMMAND
   data week|month|year [DATE] [--no-calendar]
                          Hours, entries, weeks, months and flags as JSON, from
                          the Day Notes, with the calendar for days without them
+  check week|month|year [DATE] [--no-calendar] [--activity-logs] [--json]
+                         The totals and every flag, for reading; with
+                         --activity-logs, each day and tag that differs from
+                         the old Activity Logs. Writes nothing
   month new [YYYY-MM] [--dry-run]
                          Start the month (default this month) from the
                          templates, move earlier months' files into
@@ -79,6 +83,7 @@ pub fn run(mut args: Vec<String>) -> Result<()> {
     "doctor" => doctor_command(explicit),
     "export" => export_command(explicit, args),
     "data" => data_command(explicit, args),
+    "check" => check_command(explicit, args),
     "month" => month_command(explicit, args),
     other => Err(format!("unknown command {other}; see cldr help").into()),
   }
@@ -200,15 +205,13 @@ fn export_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()
   Ok(())
 }
 
-fn data_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()> {
-  let no_calendar = take_flag(&mut args, "--no-calendar");
-  let config = Config::load(explicit.as_deref())?.config;
+/// The model for a period, as `data` and `check` both build it.
+fn build_data(
+  config: &Config,
+  period: Period,
+  no_calendar: bool,
+) -> Result<(model::Data, PathBuf)> {
   let zones = config.zones()?;
-  let period = period_args(
-    &mut args,
-    &zones,
-    "cldr data week|month|year [DATE] [--no-calendar]",
-  )?;
   let root = config
     .journal_root()?
     .ok_or("journal.root is not set in the config")?;
@@ -222,7 +225,7 @@ fn data_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()> 
     // Whole weeks and a day either side, as the model reads them.
     let from = Period::Week(first).days().0.saturating_sub(1.day());
     let to = Period::Week(last).days().1.saturating_add(1.day());
-    match open_calendar(&config, zones).and_then(|c| c.events(from, to, &filter(&config, false))) {
+    match open_calendar(config, zones).and_then(|c| c.events(from, to, &filter(config, false))) {
       Ok(events) => Some(events),
       Err(e) => {
         unread = Some(e.to_string());
@@ -251,7 +254,48 @@ fn data_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()> 
       },
     );
   }
+  Ok((data, root))
+}
+
+fn data_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()> {
+  let no_calendar = take_flag(&mut args, "--no-calendar");
+  let config = Config::load(explicit.as_deref())?.config;
+  let zones = config.zones()?;
+  let period = period_args(
+    &mut args,
+    &zones,
+    "cldr data week|month|year [DATE] [--no-calendar]",
+  )?;
+  let (data, _) = build_data(&config, period, no_calendar)?;
   println!("{}", serde_json::to_string_pretty(&data)?);
+  Ok(())
+}
+
+fn check_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()> {
+  let no_calendar = take_flag(&mut args, "--no-calendar");
+  let against_logs = take_flag(&mut args, "--activity-logs");
+  let as_json = take_flag(&mut args, "--json");
+  let config = Config::load(explicit.as_deref())?.config;
+  let zones = config.zones()?;
+  let period = period_args(
+    &mut args,
+    &zones,
+    "cldr check week|month|year [DATE] [--no-calendar] [--activity-logs] [--json]",
+  )?;
+  let (data, root) = build_data(&config, period, no_calendar)?;
+  let comparison = if against_logs {
+    let logged = legacy::load(&root, data.first, data.last)?;
+    let book = model::Rulebook::new(&config.tags, &config.bill, &config.rules);
+    Some(check::compare(&data, &logged, &book))
+  } else {
+    None
+  };
+  if as_json {
+    let out = serde_json::json!({ "flags": data.flags, "activity_logs": comparison });
+    println!("{}", serde_json::to_string_pretty(&out)?);
+  } else {
+    print!("{}", check::report(&data, comparison.as_ref()));
+  }
   Ok(())
 }
 

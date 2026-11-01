@@ -1,6 +1,6 @@
 # TN0002: Cldr build plan
 
-Status: steps 0 to 3 done, with billable hours; CI and the release path written, first release pending. Design: [TN0001](tn0001-cldr-design-note.md).
+Status: steps 0 to 3 done, with billable hours; v0.1.0 released; step 4 built, its differences being worked through. Design: [TN0001](tn0001-cldr-design-note.md).
 
 Each step ends with something usable on a real journal, so the old tooling can be retired one piece at a time. Sizes are relative (S, M, L).
 
@@ -62,6 +62,8 @@ Done when: the two sources agree across the year, and EventKit becomes the defau
 - Work through the differences with the user: fix `cldr`, or record the old log's error.
 
 Done when: every difference across the year is explained.
+
+Built: `cldr check week|month|year [DATE] [--activity-logs] [--json]`, the old logs read by `legacy` (day tables only) and judged by the same `Rulebook` as the model; a new flag, `notes_overlap`, for Day Notes rows that count time twice. First run over 2026: 294 logged days compared, 262 agree; the 32 that differ are being worked through with the user.
 
 ## Step 5: rendering into the Day Notes (M)
 

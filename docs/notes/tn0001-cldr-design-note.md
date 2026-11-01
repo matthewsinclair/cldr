@@ -49,7 +49,7 @@ Each of these is a function with tests. Values in brackets come from config.
 - **Midnight**: a session that runs past midnight is counted in full on the day it started. Contiguous blocks either side of midnight are one session; a block starting at 00:00 after a gap belongs to its own day. This holds across week and month boundaries.
 - **Breaks**: not deducted; a session counts its span.
 - **Calendar overlaps**: on a calendar-only day, overlapping blocks count once (net distinct time), and the overlap is reported.
-- **Flags**: a weekday under the minimum [`rules.min_weekday_hours`]; a Day Notes row with a time range but no hours, or hours that disagree with the range; a gap between sources over the threshold [`rules.max_gap_hours`]; a tag spelt more than one way.
+- **Flags**: a weekday under the minimum [`rules.min_weekday_hours`]; a Day Notes row with a time range but no hours, or hours that disagree with the range; a gap between sources over the threshold [`rules.max_gap_hours`]; a tag spelt more than one way; Day Notes rows whose ranges overlap (the shared time is counted twice).
 - **Grid codes**: whole hours, floored: `0` to `9`, then `A` for 10 up to `K` for 20. Over 20 is `+`.
 
 Settled while building step 2:

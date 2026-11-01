@@ -11,22 +11,37 @@ const DEPTH: usize = 3;
 
 /// Every Day Notes file under `root`, by the date range in its name, in path order.
 pub fn day_notes_files(root: &Path) -> Result<Vec<(PathBuf, Date, Date)>> {
+  files_of_kind(root, crate::names::DAY_NOTES)
+}
+
+/// Every Markdown file of a kind (eg `activity-log`) under `root`, by the date range in its
+/// name, in path order.
+pub fn files_of_kind(root: &Path, kind: &str) -> Result<Vec<(PathBuf, Date, Date)>> {
   let mut found = Vec::new();
-  walk(root, DEPTH, &mut found)?;
+  walk(root, DEPTH, &format!("{kind}.md"), &mut found)?;
   found.sort();
   Ok(found)
 }
 
-fn walk(dir: &Path, depth: usize, found: &mut Vec<(PathBuf, Date, Date)>) -> Result<()> {
+fn walk(
+  dir: &Path,
+  depth: usize,
+  rest: &str,
+  found: &mut Vec<(PathBuf, Date, Date)>,
+) -> Result<()> {
   let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
   for entry in entries {
     let entry = entry?;
     let path = entry.path();
     let kind = entry.file_type()?;
     if kind.is_dir() && depth > 0 {
-      walk(&path, depth - 1, found)?;
+      walk(&path, depth - 1, rest, found)?;
     } else if kind.is_file()
-      && let Some((first, last)) = notes::file_range(&path)
+      && let Some((first, last, tail)) = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(crate::names::parse)
+      && tail == rest
     {
       found.push((path, first, last));
     }

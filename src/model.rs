@@ -262,12 +262,54 @@ fn starts_with_any(text: &str, prefixes: &[String]) -> bool {
     .any(|p| !p.is_empty() && text.starts_with(&p.to_lowercase()))
 }
 
-struct Builder<'a> {
-  inputs: &'a Inputs<'a>,
-  tags: Tags<'a>,
+/// The configured rules, ready to apply: tag spelling, what counts as work, what bills. The
+/// model and the comparison with the old Activity Logs both judge time by this.
+pub struct Rulebook<'a> {
+  pub tags: Tags<'a>,
+  rules: &'a Rules,
   excluded_tags: BTreeSet<String>,
   /// Billable fraction by normalised tag.
   bill: BTreeMap<String, f64>,
+}
+
+impl<'a> Rulebook<'a> {
+  pub fn new(
+    tags: &'a BTreeMap<String, String>,
+    bill: &BTreeMap<String, f64>,
+    rules: &'a Rules,
+  ) -> Rulebook<'a> {
+    let tags = Tags::new(tags);
+    let excluded_tags = rules
+      .exclude
+      .iter()
+      .filter(|e| e.starts_with('@'))
+      .map(|e| tags.normalise(e).to_lowercase())
+      .collect();
+    let bill = bill
+      .iter()
+      .map(|(tag, fraction)| (tags.normalise(tag), *fraction))
+      .collect();
+    Rulebook {
+      tags,
+      rules,
+      excluded_tags,
+      bill,
+    }
+  }
+
+  pub fn bill_for(&self, tag: &str) -> f64 {
+    self.bill.get(tag).copied().unwrap_or(0.0)
+  }
+
+  /// Not work: an excluded tag, or a title that starts with an excluded prefix.
+  pub fn excluded(&self, tag: &str, what: &str) -> bool {
+    self.excluded_tags.contains(&tag.to_lowercase()) || starts_with_any(what, &self.rules.exclude)
+  }
+}
+
+struct Builder<'a> {
+  inputs: &'a Inputs<'a>,
+  book: Rulebook<'a>,
   flags: Vec<Flag>,
   spellings: BTreeMap<String, BTreeSet<String>>,
 }
@@ -302,22 +344,13 @@ impl<'a> Builder<'a> {
 
   /// A Day Notes tag, its spelling recorded for the consistency flag.
   fn tag(&mut self, raw: &str) -> String {
-    let tag = self.tags.normalise(raw);
+    let tag = self.book.tags.normalise(raw);
     self
       .spellings
       .entry(tag.clone())
       .or_default()
       .insert(raw.trim().to_owned());
     tag
-  }
-
-  fn bill_for(&self, tag: &str) -> f64 {
-    self.bill.get(tag).copied().unwrap_or(0.0)
-  }
-
-  fn excluded(&self, tag: &str, what: &str) -> bool {
-    self.excluded_tags.contains(&tag.to_lowercase())
-      || starts_with_any(what, &self.inputs.rules.exclude)
   }
 
   /// The Day Notes for a date: from the file whose name covers it, else the first that has it.
@@ -400,8 +433,8 @@ impl<'a> Builder<'a> {
         }
       };
       sum += row.hours.unwrap_or(0.0);
-      let counted = !self.excluded(&tag, &row.what);
-      let bill = row.bill.unwrap_or_else(|| self.bill_for(&tag));
+      let counted = !self.book.excluded(&tag, &row.what);
+      let bill = row.bill.unwrap_or_else(|| self.book.bill_for(&tag));
       entries.push(Entry {
         date: day.date,
         start: row.span.map(|s| clock(s.start)),
@@ -419,6 +452,7 @@ impl<'a> Builder<'a> {
         span: row.span,
       });
     }
+    self.flag_overlaps(file, day);
     if let Some(total) = &day.total
       && round(total.hours) != round(sum)
     {
@@ -435,6 +469,34 @@ impl<'a> Builder<'a> {
       );
     }
     entries
+  }
+
+  /// Day Notes rows whose time ranges overlap count the shared time twice; each pair is flagged.
+  fn flag_overlaps(&mut self, file: &Notes, day: &DayNote) {
+    let mut timed: Vec<(&notes::Row, Span)> = day
+      .rows
+      .iter()
+      .filter_map(|r| r.span.map(|s| (r, s)))
+      .collect();
+    timed.sort_by_key(|(_, s)| (s.start, s.end));
+    for (i, (a, sa)) in timed.iter().enumerate() {
+      for (b, sb) in timed.iter().skip(i + 1) {
+        if sb.start >= sa.end {
+          break;
+        }
+        let shared = sa.end.min(sb.end) - sb.start;
+        self.flag_at(
+          "notes_overlap",
+          Some(day.date),
+          format!(
+            "{sa} and {sb} overlap: {} h counted twice",
+            round(f64::from(shared) / 60.0)
+          ),
+          &file.file,
+          b.line.max(a.line),
+        );
+      }
+    }
   }
 
   /// Timed calendar events on a date, each clipped to time not already covered (net time), and
@@ -463,10 +525,10 @@ impl<'a> Builder<'a> {
     let mut entries = Vec::new();
     for (span, event) in timed {
       let title = crate::export::one_line(&event.title);
-      let tag = calendar_tag(&title).map(|t| self.tags.normalise(t));
+      let tag = calendar_tag(&title).map(|t| self.book.tags.normalise(t));
       let hold = starts_with_any(&title, &self.inputs.rules.zero_hours);
       let counted = match &tag {
-        Some(tag) => !hold && !self.excluded(tag, &title),
+        Some(tag) => !hold && !self.book.excluded(tag, &title),
         None => false,
       };
       let net = if counted {
@@ -484,7 +546,7 @@ impl<'a> Builder<'a> {
         f64::from(span.minutes()) / 60.0
       };
       let tag = tag.unwrap_or_default();
-      let bill = self.bill_for(&tag);
+      let bill = self.book.bill_for(&tag);
       entries.push(Entry {
         date,
         start: Some(clock(span.start)),
@@ -539,25 +601,10 @@ fn carry_midnight(day: &mut Vec<Entry>, next: &mut Vec<Entry>, next_date: Date, 
 pub fn build(inputs: &Inputs<'_>) -> Data {
   let mut builder = Builder {
     inputs,
-    tags: Tags::new(inputs.tags),
-    excluded_tags: BTreeSet::new(),
-    bill: BTreeMap::new(),
+    book: Rulebook::new(inputs.tags, inputs.bill, inputs.rules),
     flags: Vec::new(),
     spellings: BTreeMap::new(),
   };
-  let excluded: BTreeSet<String> = inputs
-    .rules
-    .exclude
-    .iter()
-    .filter(|e| e.starts_with('@'))
-    .map(|e| builder.tags.normalise(e).to_lowercase())
-    .collect();
-  builder.excluded_tags = excluded;
-  builder.bill = inputs
-    .bill
-    .iter()
-    .map(|(tag, fraction)| (builder.tags.normalise(tag), *fraction))
-    .collect();
 
   let (first, last) = inputs.period.days();
   // Whole weeks, so a week at either end is summarised in full; then one day either side, for
@@ -686,7 +733,7 @@ pub fn build(inputs: &Inputs<'_>) -> Data {
         .rules
         .weekday_only
         .iter()
-        .map(|t| builder.tags.normalise(t))
+        .map(|t| builder.book.tags.normalise(t))
         .collect();
       for tag in totals.by_tag.keys().filter(|t| weekday_only.contains(*t)) {
         builder.flag(
@@ -1133,6 +1180,23 @@ mod tests {
       .find(|w| w.first <= date && date <= w.last)
       .ok_or("week")?;
     assert_eq!(week.totals.billable, d.totals.billable);
+    Ok(())
+  }
+
+  #[test]
+  fn overlapping_rows_are_flagged() -> Result<()> {
+    let date = Date::new(2026, 8, 25)?;
+    let rows: &[&str] = &[
+      "| @a | 15:00-15:30 | 0.5 | call |",
+      "| @a | 15:00-18:00 | 3.0 | work |",
+      "| @a | 18:00-19:00 | 1.0 | after, touching |",
+    ];
+    let data = Case::new(Period::Week(date), vec![month_file(date, &[(date, rows)])]).build();
+    let overlaps = kinds(&data, Some(date))
+      .into_iter()
+      .filter(|k| *k == "notes_overlap")
+      .count();
+    assert_eq!(overlaps, 1);
     Ok(())
   }
 }

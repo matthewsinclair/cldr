@@ -1,9 +1,11 @@
 pub mod calendar;
+pub mod check;
 pub mod cli;
 pub mod config;
 pub mod doctor;
 pub mod export;
 pub mod journal;
+pub mod legacy;
 pub mod model;
 pub mod month;
 pub mod names;
