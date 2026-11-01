@@ -1,4 +1,5 @@
 use crate::Result;
+use crate::zones::Zones;
 use jiff::tz::TimeZone;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -29,6 +30,16 @@ pub struct Journal {
   /// An IANA zone name; the machine's zone when absent.
   pub timezone: Option<String>,
   pub templates: Option<String>,
+  /// Where the user was: from each date on, the wall clock is in this zone.
+  #[serde(default)]
+  pub zones: Vec<ZoneFrom>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZoneFrom {
+  pub from: jiff::civil::Date,
+  pub zone: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -144,6 +155,16 @@ impl Config {
     }
   }
 
+  /// The default zone and the dated changes.
+  pub fn zones(&self) -> Result<Zones> {
+    let mut changes = Vec::with_capacity(self.journal.zones.len());
+    for z in &self.journal.zones {
+      let zone = TimeZone::get(&z.zone).map_err(|e| format!("journal.zones {}: {e}", z.zone))?;
+      changes.push((z.from, zone));
+    }
+    Zones::new(self.zone()?, changes)
+  }
+
   pub fn journal_root(&self) -> Result<Option<PathBuf>> {
     self.journal.root.as_deref().map(expand).transpose()
   }
@@ -213,6 +234,16 @@ mod tests {
     let config = Config::parse(text)?;
     assert!(config.journal.root.is_some());
     assert!(!config.tags.is_empty());
+    assert!(!config.journal.zones.is_empty());
+    config.zones()?;
+    Ok(())
+  }
+
+  #[test]
+  fn an_unknown_zone_is_refused() -> Result<()> {
+    let config =
+      Config::parse("[[journal.zones]]\nfrom = \"2026-01-01\"\nzone = \"Nowhere/Atall\"\n")?;
+    assert!(config.zones().is_err());
     Ok(())
   }
 }

@@ -4,7 +4,6 @@ use crate::calendar::{CalendarSource, Filter};
 use crate::config::{self, Config};
 use crate::doctor;
 use crate::export::{self, Period};
-use jiff::Zoned;
 use jiff::civil::Date;
 use std::path::PathBuf;
 
@@ -115,7 +114,7 @@ fn export_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()
   let dropped = take_flag(&mut args, "--dropped");
   let loaded = Config::load(explicit.as_deref())?;
   let config = loaded.config;
-  let zone = config.zone()?;
+  let zones = config.zones()?;
   let kind = if args.is_empty() {
     String::new()
   } else {
@@ -125,7 +124,7 @@ fn export_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()
     Some(text) => text
       .parse::<Date>()
       .map_err(|e| format!("{text}: expected YYYY-MM-DD ({e})"))?,
-    None => Zoned::now().with_time_zone(zone.clone()).date(),
+    None => zones.date_of(jiff::Timestamp::now()),
   };
   if args.len() > 1 {
     return Err(format!("unexpected arguments: {}", args[1..].join(" ")).into());
@@ -144,7 +143,7 @@ fn export_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()
       .into(),
     );
   }
-  let source = BusyCal::open(&config.store_path()?, zone, &config.calendar.me)?;
+  let source = BusyCal::open(&config.store_path()?, zones, &config.calendar.me)?;
   let filter = Filter {
     include: config.calendar.include.clone(),
     exclude: config.calendar.exclude.clone(),

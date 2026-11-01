@@ -7,6 +7,7 @@ use super::archive;
 use super::recur::{self, Freq, Rule};
 use super::{CalendarSource, Event, Filter, Response, When};
 use crate::Result;
+use crate::zones::Zones;
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan, Zoned};
@@ -33,22 +34,26 @@ struct CalendarInfo {
 
 pub struct BusyCal {
   db: Connection,
+  /// The journal's zones: events are dated and shown in the zone of the day they fall on.
+  zones: Zones,
+  /// For times stored with an unknown zone name.
   zone: TimeZone,
   me: Vec<String>,
 }
 
 impl BusyCal {
-  pub fn open(path: &Path, zone: TimeZone, me: &[String]) -> Result<BusyCal> {
+  pub fn open(path: &Path, zones: Zones, me: &[String]) -> Result<BusyCal> {
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let db =
       Connection::open_with_flags(path, flags).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(BusyCal::from_connection(db, zone, me))
+    Ok(BusyCal::from_connection(db, zones, me))
   }
 
-  pub fn from_connection(db: Connection, zone: TimeZone, me: &[String]) -> BusyCal {
+  pub fn from_connection(db: Connection, zones: Zones, me: &[String]) -> BusyCal {
     BusyCal {
       db,
-      zone,
+      zone: zones.default_zone().clone(),
+      zones,
       me: me.iter().map(|m| m.to_lowercase()).collect(),
     }
   }
@@ -218,11 +223,8 @@ impl CalendarSource for BusyCal {
     let calendars = self.calendars()?;
     let me = self.addresses(&calendars);
     let moved = self.moved()?;
-    let window_start = first.to_zoned(self.zone.clone())?.timestamp();
-    let window_end = last
-      .saturating_add(1.day())
-      .to_zoned(self.zone.clone())?
-      .timestamp();
+    let window_start = self.zones.start_of(first)?;
+    let window_end = self.zones.start_of(last.saturating_add(1.day()))?;
     let base = Date::new(2001, 1, 1)?;
     // The store indexes events by local day number; widen by two days for zone differences.
     let day0 = i64::from(first.since(base)?.get_days()) - 2;
@@ -329,8 +331,8 @@ impl CalendarSource for BusyCal {
           }
         } else {
           When::Timed {
-            start: f.start.to_zoned(self.zone.clone()),
-            end: f.end.to_zoned(self.zone.clone()),
+            start: f.start.to_zoned(self.zones.at(f.start).clone()),
+            end: f.end.to_zoned(self.zones.at(f.start).clone()),
           }
         },
         calendars: vec![f.calendar.clone()],
@@ -601,7 +603,7 @@ mod tests {
 
   fn read(store: Store, first: Date, last: Date, filter: &Filter) -> Result<Vec<Event>> {
     let me = vec!["me@example.com".to_owned()];
-    BusyCal::from_connection(store.db, zone()?, &me).events(first, last, filter)
+    BusyCal::from_connection(store.db, Zones::fixed(zone()?), &me).events(first, last, filter)
   }
 
   #[test]

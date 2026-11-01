@@ -39,13 +39,9 @@ pub fn run(loaded: &Loaded) -> Vec<Check> {
     Err(e) => push(false, "journal", e.to_string()),
   }
 
-  let zone = config.zone();
+  let zone = config.zones();
   match &zone {
-    Ok(zone) => push(
-      true,
-      "zone",
-      zone.iana_name().unwrap_or("system").to_owned(),
-    ),
+    Ok(zone) => push(true, "zone", describe(zone)),
     Err(e) => push(false, "zone", e.to_string()),
   }
 
@@ -75,6 +71,19 @@ pub fn run(loaded: &Loaded) -> Vec<Check> {
     (Err(e), _) | (_, Err(e)) => push(false, "calendar", e.to_string()),
   }
   checks
+}
+
+fn describe(zones: &crate::zones::Zones) -> String {
+  let name = |z: &jiff::tz::TimeZone| z.iana_name().unwrap_or("system").to_owned();
+  let changes = zones.changes();
+  if changes.is_empty() {
+    return name(zones.default_zone());
+  }
+  let dated: Vec<String> = changes
+    .iter()
+    .map(|(from, z)| format!("{} from {from}", name(z)))
+    .collect();
+  format!("{}, then {}", name(zones.default_zone()), dated.join(", "))
 }
 
 fn store_denied(path: &str) -> String {

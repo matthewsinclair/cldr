@@ -3,6 +3,7 @@ pub mod cli;
 pub mod config;
 pub mod doctor;
 pub mod export;
+pub mod zones;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;

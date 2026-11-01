@@ -7,6 +7,15 @@ author = "Your Name"
 # timezone = "Europe/London"   # the machine's zone when absent
 templates = "~/.config/cldr/templates"
 
+# Where you were: from each date on, the journal's wall clock is in this zone.
+[[journal.zones]]
+from = "2026-09-27"
+zone = "Pacific/Auckland"
+
+[[journal.zones]]
+from = "2026-12-20"
+zone = "Europe/London"
+
 [calendar]
 source = "busycal"
 include = ["you@example.com", "you@work.example"]
