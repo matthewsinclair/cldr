@@ -1,6 +1,6 @@
 # TN0002: Cldr build plan
 
-Status: steps 0 to 5 built, with billable hours; v0.1.0 released. Step 5 awaits its first render of the real journal. Design: [TN0001](tn0001-cldr-design-note.md).
+Status: steps 0 to 5 done, with billable hours; v0.1.0 released; 2026 rendered. Next: step 6. Design: [TN0001](tn0001-cldr-design-note.md).
 
 Each step ends with something usable on a real journal, so the old tooling can be retired one piece at a time. Sizes are relative (S, M, L).
 
@@ -73,7 +73,7 @@ Built: `cldr check week|month|year [DATE] [--activity-logs] [--json]`, the old l
 
 Done when: a real month renders cleanly. From here `month new` also does its final render and check before archiving.
 
-Built: `render` (sections between `<!-- cldr:month YYYY-MM -->` and `<!-- cldr:week YYYY-Www -->` markers; the month grid as the old Activity Log drew it, hours and billable by tag; each week's Project by day table under its heading, in the file of the month it starts in; a missing week heading added in newest-first order), `cldr render week|month [DATE] [--dry-run] [--no-calendar]`, the month's `YYYYMMDD-YYYYMMDD-data.json` beside its Day Notes with paths relative to the journal, written through a temporary file. Tested: render twice, no change; the hand-written text survives intact. A copy of October rendered with nothing removed and its weeks matching the old Activity Log.
+Built: `render` (sections between `<!-- cldr:month YYYY-MM -->` and `<!-- cldr:week YYYY-Www -->` markers; the month grid as the old Activity Log drew it, hours and billable by tag; each week's Project by day table under its heading, in the file of the month it starts in; a missing week heading added in newest-first order), `cldr render week|month [DATE] [--dry-run] [--no-calendar]`, the month's `YYYYMMDD-YYYYMMDD-data.json` beside its Day Notes with paths relative to the journal, written through a temporary file. Tested: render twice, no change; the hand-written text survives intact. A copy of October rendered with nothing removed and its weeks matching the old Activity Log; then all of 2026 (January to November) rendered into the real journal in one commit, no hand-written line changed. Two fixes from that run: a new week heading goes under the TWIL heading that opens its block, and weeks that have not begun are not rendered.
 
 ## Step 6: the briefing, and retiring the old tooling (M)
 

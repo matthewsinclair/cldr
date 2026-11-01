@@ -274,21 +274,33 @@ fn put_week(text: &str, week: &Week, body: &str) -> String {
     week.first.strftime("%Y%m%d"),
     week.first.iso_week_date().week()
   );
-  // A block opens at a `#### ---` rule or a TWIL heading just above a dated heading.
+  // A block opens at a `#### ---` rule or a TWIL heading just above a dated heading. The week's
+  // heading goes at the block's start, or under its TWIL heading, as the user writes them.
   let mut offset = 0;
   let mut block_start: Option<usize> = None;
+  let mut under_twil: Option<usize> = None;
   for line in text.split_inclusive('\n') {
     let t = line.trim();
-    if t.starts_with("#### -") || t.starts_with("##### This Week I Learned") {
+    if t.starts_with("##### This Week I Learned") {
+      block_start.get_or_insert(offset);
+      under_twil = Some(offset + line.len());
+    } else if t.starts_with("#### -") {
       block_start.get_or_insert(offset);
     } else if let Some((date, _)) = heading_date(line) {
       if date <= week.last {
-        let at = block_start.unwrap_or(offset);
-        return format!("{}{heading}{}", &text[..at], &text[at..]);
+        return match under_twil {
+          Some(at) => format!("{}\n{heading}{}", &text[..at], &text[at..]),
+          None => {
+            let at = block_start.unwrap_or(offset);
+            format!("{}{heading}{}", &text[..at], &text[at..])
+          }
+        };
       }
       block_start = None;
+      under_twil = None;
     } else if !t.is_empty() {
       block_start = None;
+      under_twil = None;
     }
     offset += line.len();
   }
@@ -321,15 +333,16 @@ pub enum Scope<'a> {
 }
 
 /// The Day Notes text with its generated sections rendered: the month section, and the sections
-/// of the weeks that start in the month (or only the one week asked for).
+/// of the weeks that start in the month and have begun (or only the one week asked for).
 pub fn render(text: &str, month: Date, data: &Data, today: Date, scope: Scope<'_>) -> String {
   let month = month.first_of_month();
   let id = month.strftime("%Y-%m").to_string();
   let mut out = put_month(text, &id, &month_body(data, month, today));
+  // Weeks that start in this month and have started by today.
   for week in data
     .weeks
     .iter()
-    .filter(|w| w.first.first_of_month() == month)
+    .filter(|w| w.first.first_of_month() == month && w.first <= today)
   {
     if let Scope::Week(only) = scope
       && week.week != only
@@ -551,6 +564,57 @@ mod tests {
     );
     assert_eq!(strip(&again), strip(&edited));
     assert!(again.contains("9.0"));
+    Ok(())
+  }
+
+  #[test]
+  fn a_new_week_heading_goes_under_a_twil_heading_that_opens_its_block() -> crate::Result<()> {
+    let month = Date::new(2026, 3, 1)?;
+    let day = Date::new(2026, 3, 31)?;
+    let text = format!(
+      "# {} Day Notes\n\n##### This Week I Learned #TWIL\n\n{}",
+      crate::month::range(month),
+      day_notes(month, &[], &[(day, "| @a | 09:00-10:00 | 1.0 | x |")])
+        .split_once("Day Notes\n")
+        .map(|(_, rest)| rest.to_owned())
+        .unwrap_or_default()
+    );
+    let data = data_for(month, &text);
+    let out = render(
+      &text,
+      month,
+      &data,
+      Period::Month(month).days().1,
+      Scope::Month,
+    );
+    let twil = out.find("##### This Week I Learned").ok_or("twil")?;
+    let monday = Period::Week(day).days().0;
+    let heading = out
+      .find(&format!("#### {} (Week", monday.strftime("%Y%m%d")))
+      .ok_or("heading")?;
+    let first_day = out.find("#### 20260331").ok_or("day")?;
+    assert!(twil < heading && heading < first_day);
+    Ok(())
+  }
+
+  #[test]
+  fn weeks_that_have_not_started_are_not_rendered() -> crate::Result<()> {
+    let (month, text) = case()?;
+    let data = data_for(month, &text);
+    let today = Date::new(2026, 10, 14)?;
+    let out = render(&text, month, &data, today, Scope::Month);
+    for week in data
+      .weeks
+      .iter()
+      .filter(|w| w.first.first_of_month() == month)
+    {
+      assert_eq!(
+        out.contains(&start_week(&week.week)),
+        week.first <= today,
+        "{}",
+        week.week
+      );
+    }
     Ok(())
   }
 }
