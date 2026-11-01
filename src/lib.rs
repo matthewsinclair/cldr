@@ -5,6 +5,7 @@ pub mod doctor;
 pub mod export;
 pub mod journal;
 pub mod model;
+pub mod month;
 pub mod notes;
 pub mod period;
 pub mod zones;

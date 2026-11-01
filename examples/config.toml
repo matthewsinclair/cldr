@@ -32,3 +32,14 @@ zero_hours = ["Travel:"]
 weekday_only = ["@Acme"]
 min_weekday_hours = 8.0
 max_gap_hours = 1.0
+
+# cldr month new: the files a month starts with (templates in journal.templates) and the links
+# at the journal root that follow the current month.
+[month.templates]
+"Day Notes" = "day-notes.md"
+"Link Dump" = "link-dump.md"
+
+[month.links]
+"day_notes.md" = "Day Notes"
+"link_dump.md" = "Link Dump"
+"daily_briefing.md" = "Daily Briefing"

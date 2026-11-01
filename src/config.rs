@@ -20,6 +20,21 @@ pub struct Config {
   pub tags: BTreeMap<String, String>,
   #[serde(default)]
   pub rules: Rules,
+  #[serde(default)]
+  pub month: MonthFiles,
+}
+
+/// What a month is made of, for `cldr month new`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MonthFiles {
+  /// Kind (eg "Day Notes") to its template, a file in `journal.templates`. A month's file of
+  /// that kind is `YYYYMMDD-YYYYMMDD <kind>.md` at the journal root.
+  #[serde(default)]
+  pub templates: BTreeMap<String, String>,
+  /// Link at the journal root (eg "day_notes.md") to the kind it follows.
+  #[serde(default)]
+  pub links: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -169,6 +184,10 @@ impl Config {
     self.journal.root.as_deref().map(expand).transpose()
   }
 
+  pub fn templates_dir(&self) -> Result<Option<PathBuf>> {
+    self.journal.templates.as_deref().map(expand).transpose()
+  }
+
   pub fn store_path(&self) -> Result<PathBuf> {
     match &self.calendar.store {
       Some(path) => expand(path),
@@ -235,6 +254,7 @@ mod tests {
     assert!(config.journal.root.is_some());
     assert!(!config.tags.is_empty());
     assert!(!config.journal.zones.is_empty());
+    assert!(!config.month.templates.is_empty());
     config.zones()?;
     Ok(())
   }

@@ -5,7 +5,7 @@ use crate::config::{self, Config};
 use crate::doctor;
 use crate::export::{self, Period};
 use crate::zones::Zones;
-use crate::{journal, model};
+use crate::{journal, model, month};
 use jiff::ToSpan;
 use jiff::civil::Date;
 use std::path::PathBuf;
@@ -21,6 +21,11 @@ Usage: cldr [--config PATH] COMMAND
   data week|month|year [DATE] [--no-calendar]
                          Hours, entries, weeks, months and flags as JSON, from
                          the Day Notes, with the calendar for days without them
+  month new [YYYY-MM] [--dry-run]
+                         Start the month (default this month) from the
+                         templates, move earlier months' files into
+                         YYYY/YYYYMM/ (git mv in a work tree), repoint the
+                         root links
   doctor                 Check the config, the journal and calendar access
   paths                  Show resolved paths
   help                   Show this help
@@ -74,6 +79,7 @@ pub fn run(mut args: Vec<String>) -> Result<()> {
     "doctor" => doctor_command(explicit),
     "export" => export_command(explicit, args),
     "data" => data_command(explicit, args),
+    "month" => month_command(explicit, args),
     other => Err(format!("unknown command {other}; see cldr help").into()),
   }
 }
@@ -246,4 +252,39 @@ fn data_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()> 
   }
   println!("{}", serde_json::to_string_pretty(&data)?);
   Ok(())
+}
+
+fn month_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()> {
+  let dry_run = take_flag(&mut args, "--dry-run");
+  let usage = "cldr month new [YYYY-MM] [--dry-run]";
+  if args.first().map(String::as_str) != Some("new") || args.len() > 2 {
+    return Err(usage.into());
+  }
+  let config = Config::load(explicit.as_deref())?.config;
+  let zones = config.zones()?;
+  let month = match args.get(1) {
+    Some(text) => format!("{text}-01")
+      .parse::<Date>()
+      .map_err(|e| format!("{text}: expected YYYY-MM ({e})"))?,
+    None => today(&zones),
+  };
+  let root = config
+    .journal_root()?
+    .ok_or("journal.root is not set in the config")?;
+  let templates = config.templates_dir()?;
+  let setup = month::Setup {
+    root: &root,
+    templates: templates.as_deref(),
+    files: &config.month,
+    author: config.journal.author.as_deref().unwrap_or_default(),
+  };
+  let actions = month::plan(&setup, month)?;
+  for action in &actions {
+    println!("{}", crate::clean(&action.to_string()));
+  }
+  if dry_run {
+    println!("(dry run: nothing changed)");
+    return Ok(());
+  }
+  month::apply(&root, &actions)
 }

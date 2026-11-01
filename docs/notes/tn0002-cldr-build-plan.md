@@ -1,6 +1,6 @@
 # TN0002: Cldr build plan
 
-Status: steps 0, 1 and 2 done; CI (step 0) still to add. Design: [TN0001](tn0001-cldr-design-note.md).
+Status: steps 0 to 3 done; CI (step 0) still to add. Design: [TN0001](tn0001-cldr-design-note.md).
 
 Each step ends with something usable on a real journal, so the old tooling can be retired one piece at a time. Sizes are relative (S, M, L).
 
@@ -44,6 +44,8 @@ Brought forward: the old wraps are not run again, so months wait for this.
 - Turns over every month still waiting, oldest first.
 
 Done when: a month turns over with one command and nothing else to do by hand.
+
+Done: `cldr month new [YYYY-MM] [--dry-run]`. The plan is worked out before anything changes: the month's files from `[month.templates]` (placeholders `START_DATE`, `END_DATE`, `YEAR`, `MONTH`, `MONTH_NAME`, `AUTHOR`; an unknown one is refused), the spanning-week note under the Day Notes title, the `[month.links]` repointed (a plain copy made by sync goes only when a month file holds the same text), and every root file named for one earlier month moved into `YYYY/YYYYMM/` (`git mv` when tracked; a move onto an existing file stops the plan). Re-running finds nothing to do. Waiting months need no loop: every earlier month's files move in one run; only the target month's files are created.
 
 ## Step 3b: EventKit as a second source (M)
 
