@@ -1,0 +1,28 @@
+#!/bin/sh
+# Render the Homebrew formula for a release tag, or check the template.
+#   tools/formula render TAG SHA256 OUTPUT
+#   tools/formula --check
+set -eu
+
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+template="$root/packaging/homebrew/cldr.rb"
+
+die() { echo "formula: $*" >&2; exit 1; }
+
+case "${1:-}" in
+  --check)
+    for placeholder in @RELEASE_TAG@ @RELEASE_SHA256@; do
+      grep -q "$placeholder" "$template" || die "template lacks $placeholder"
+    done
+    echo "formula: template ok"
+    ;;
+  render)
+    [ "$#" -eq 4 ] || die "usage: tools/formula render TAG SHA256 OUTPUT"
+    tag=$2 sha=$3 out=$4
+    case "$tag" in v[0-9]*.[0-9]*.[0-9]*) ;; *) die "tag $tag is not vX.Y.Z" ;; esac
+    printf '%s' "$sha" | grep -Eq '^[0-9a-f]{64}$' || die "not a SHA-256: $sha"
+    sed -e "s/@RELEASE_TAG@/$tag/g" -e "s/@RELEASE_SHA256@/$sha/g" "$template" >"$out"
+    if grep -q '@RELEASE_' "$out"; then die "placeholders left in $out"; fi
+    ;;
+  *) die "usage: tools/formula render TAG SHA256 OUTPUT | --check" ;;
+esac
