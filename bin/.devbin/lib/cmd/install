@@ -1,0 +1,507 @@
+#!/usr/bin/env bash
+#
+# The built-in `install` -- vendor this runtime into a project.
+#
+# The source is whatever devbin is RUNNING, not a hard-coded checkout: a devbin
+# installed in project A can seed project B by the same path a fresh clone
+# does. That falls out of lib/install taking a root and asking it where its
+# runtime is, rather than knowing where devbin lives.
+#
+# What it writes is exactly the vendored set plus the scaffolding a project
+# needs to be a project. What it must never write is anything a person authored
+# -- see THE SEAM at the top of lib/install.
+#
+set -euo pipefail
+
+# shellcheck source=lib/helpers
+. "${DEVBIN_LIB:?run me through bin/devbin}/helpers"
+# shellcheck source=lib/config
+. "$DEVBIN_LIB/config"
+# shellcheck source=lib/install
+. "$DEVBIN_LIB/install"
+
+usage() {
+  cat <<EOF
+usage: $DEVBIN_INVOKE install [--into <dir>] [--name <n>] [--alias <a>] [--lang <l>] [--force]
+       $DEVBIN_INVOKE install [--prefix <dir>] [--managed-by brew] [--force]   (inside devbin's own tree)
+
+  --into <dir>   the project to install into, a directory that is already
+                 there: install makes none (default: the current directory)
+  --prefix <dir> PUBLISH mode only: where to publish the machine install
+                 (default: install.prefix in devbin's own config. There is no
+                 built-in default -- the location is configuration)
+  --managed-by brew
+                 PUBLISH mode only: record that Homebrew owns this install, so
+                 devbin's install and upgrade refuse to write into it. The
+                 Homebrew formula passes it
+  --name <n>     the project name (default: the target directory's name)
+  --alias <a>    a short name this project may keep, eg 'dm' for demo.
+                 RECORDED ONLY -- devbin creates no symlink for it
+  --lang <l>     a language the project declares; repeatable, or comma-separated
+  --force        VENDOR mode: re-vendor over an existing install. PUBLISH
+                 mode: replace the opt install devbin wrote at the prefix,
+                 the one way to re-publish
+
+Writes bin/devbin and bin/.devbin/lib/, scaffolds bin/.devbin/{cmd,help}, and
+writes a starter config.yaml IF THERE IS NONE. Your config, handlers and
+authored help are never overwritten, with or without --force.
+
+TWO MODES, chosen by the tree you are standing in:
+
+  PUBLISH   run inside devbin's own source tree with no --into. Publishes this
+            runtime to the install prefix, which is what every consumer then
+            vendors from. Refuses on a dirty tree, and replaces an existing
+            install only with --force.
+  VENDOR    everywhere else, and unchanged: install devbin into a project.
+
+The mode is printed before anything is written.
+EOF
+}
+
+# starter_config <name> <alias> <langs> <version> -- the config a fresh install
+# gets, on stdout.
+#
+# `languages:` is OMITTED rather than left empty when none was given. An empty
+# mapping is out of the config subset and `project.languages` with no index
+# is not a schema path, so the tidier-looking empty key would make the very
+# first `devbin doctor` fail validation on a file devbin wrote itself.
+starter_config() {
+  local name="$1" alias="$2" langs="$3" version="$4" l
+  printf '# %s -- devbin configuration.\n' "$name"
+  printf '#\n'
+  printf '# Written by: devbin install. Every key, annotated, is vendored beside this\n'
+  printf '# file at bin/.devbin/lib/config.reference.yaml.\n'
+  printf '\n'
+  printf 'project:\n'
+  printf '  name: %s\n' "$name"
+  [ -n "$alias" ] && printf '  alias: %s\n' "$alias"
+  if [ -n "$langs" ]; then
+    printf '  languages:\n'
+    for l in $langs; do printf '    - %s\n' "$l"; done
+  else
+    printf '  # languages:            # elixir, rust, swift, lua, shell -- this is what\n'
+    printf '  #   - elixir            # activates the built-in gates for it\n'
+  fi
+  printf '\n'
+  printf '# The devbin this project expects. Enforced by: devbin doctor\n'
+  printf 'devbin_version: "^%s"\n' "$version"
+  return 0
+}
+
+# target_refusal <dir> -- rc 0 when <dir> is a directory to install into, and
+# otherwise dies saying what is there. A relative <dir> is read from the
+# current directory, the user's, as their shell read it.
+#
+# A MISSING TARGET IS REFUSED, NEVER MADE (issue 0258): a directory made here
+# would make a mistyped path into a project. So only a path with nothing at it
+# is told to make one, by a line spelled from / and quoted to be pasted as it
+# is. A file, or a link to nothing, would fail that mkdir, and a leading ~ that
+# reached install quoted, and so unexpanded, would make a directory named ~ in
+# the current one.
+target_refusal() {
+  local d="$1" abs
+  [ -d "$d" ] && return 0
+  if [ -e "$d" ] || [ -L "$d" ]; then
+    die "not a directory: $d"
+  fi
+  # shellcheck disable=SC2088
+  case "$d" in
+    '~'*) die "no such directory: $d
+       its ~ was not expanded: a shell expands a leading ~ only outside quotes, and install expands none, so name the directory from \$HOME or /" ;;
+    /*) abs="$d" ;;
+    *) abs="$PWD/$d" ;;
+  esac
+  die "no such directory: $d
+       install makes none, so a path that is not there is refused rather than made into a project
+       make it, then run install again:  mkdir -p $(printf '%q' "$abs")"
+}
+
+# THE PER-PROJECT LAUNCHER SYMLINK IS RETIRED.
+#
+# `link_alias` lived here and made `bin/<project>` and `bin/<alias>` point at
+# `bin/devbin`, so you typed `bin/demo test`. That convention collided with
+# the binaries these projects now BUILD: a project named `demo` ships a `demo`,
+# and another had already routed around it by giving its shim a shorter name.
+# A launcher that shadows the product is the wrong default.
+#
+# `bin/devbin` was always the real dispatcher and the symlinks were always
+# aliases to it, so the retirement is a DELETION rather than a new convention --
+# and the symlinks were never in devbin's vendored half, so no manifest,
+# checksum or doctor baseline moves with them.
+#
+# `--alias` is still accepted and still recorded in config: it names the project
+# for `intent` and for a human, and nothing about that needed the symlink.
+
+main() {
+  local into="" name="" alias="" langs="" force="" prefix="" managed="" srcroot dstroot version
+  local rel src count=0 config mode vendor_only="" record paths recorded removed lf
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -h | --help)
+        usage
+        return 0
+        ;;
+      --into)
+        [ $# -ge 2 ] || die "--into needs a directory"
+        # AN EMPTY --into IS A USAGE ERROR, NEVER NO --into (issue 0268): the
+        # mode is chosen by whether --into was given, so an unset `--into
+        # "$dir"` vendored into the current directory, or, from devbin's own
+        # tree, selected PUBLISH and published it.
+        [ -n "$2" ] || die "--into is empty: name the directory to install into (an empty --into is refused, never read as no --into)"
+        into="$2"
+        shift 2
+        ;;
+      --name)
+        vendor_only="$vendor_only --name"
+        name="${2:-}"
+        case "$name" in
+          *[A-Z]*) die "project name must be lower case: --name $name
+       It is the identity in help, die/warn output and doctor, and a capitalised
+       one reads as a directory name leaking into a command surface." ;;
+        esac
+        shift 2 || die "--name needs a value"
+        ;;
+      --alias)
+        vendor_only="$vendor_only --alias"
+        alias="${2:-}"
+        case "$alias" in
+          *[A-Z]*) die "alias must be lower case: --alias $alias
+       Recorded only -- devbin installs nothing for it -- but if the project
+       hand-makes bin/$alias, a capital is not a conforming command name." ;;
+        esac
+        shift 2 || die "--alias needs a value"
+        ;;
+      --lang)
+        vendor_only="$vendor_only --lang"
+        langs="$langs $(printf '%s' "${2:-}" | tr ',' ' ')"
+        shift 2 || die "--lang needs a value"
+        ;;
+      --prefix)
+        prefix="${2:-}"
+        shift 2 || die "--prefix needs a directory"
+        ;;
+      --managed-by)
+        managed="${2:-}"
+        shift 2 || die "--managed-by needs a value"
+        # ONE MANAGER, NAMED, so a typo is refused rather than recorded as a
+        # manager nothing knows to step aside for (issue 0195).
+        case "$managed" in
+          brew) ;;
+          *) die "--managed-by takes brew, the one manager devbin steps aside for, not '$managed'" ;;
+        esac
+        ;;
+      --force)
+        force=yes
+        shift
+        ;;
+      -*) die "unknown option '$1' (try: $DEVBIN_INVOKE install --help)" ;;
+      *) die "unexpected argument '$1' (the target goes after --into)" ;;
+    esac
+  done
+
+  srcroot="${PROJECT_ROOT:?}"
+
+  is_devbin_source "$srcroot" ||
+    die "this devbin cannot be a source: no dispatcher or runtime at $srcroot"
+
+  # --- WHICH MODE (ST0005) ---------------------------------------------------
+  #
+  # PUBLISH when standing in devbin's own source tree with no --into; VENDOR
+  # everywhere else. An explicit --into is always VENDOR, because naming a target
+  # is unambiguous about what you meant and seeding a consumer from the dev tree
+  # has to stay possible.
+  #
+  # `is_devbin_dev_tree` asks whether this tree can be vendored FROM while
+  # carrying no vendored runtime of its OWN -- derived from the two predicates
+  # that already exist rather than from a path or a project name, neither of
+  # which is a fact about what the tree IS. The install tree reads as a consumer
+  # here, which is correct: it is consumer-shaped by design.
+  if [ -z "$into" ] && is_devbin_dev_tree "$srcroot"; then
+    mode=publish
+  else
+    mode=vendor
+  fi
+
+  # A flag that is meaningless in the mode you are actually in is a usage error,
+  # not something to ignore. Silently discarding --prefix would publish to the
+  # configured location while the operator believed they had redirected it.
+  if [ -n "$prefix" ] && [ "$mode" != publish ]; then
+    die "--prefix applies only when publishing from devbin's own source tree
+       you are in VENDOR mode$([ -n "$into" ] && printf ' (--into was given)')
+       to publish:  cd <the devbin source tree> && bin/devbin install"
+  fi
+  if [ -n "$managed" ] && [ "$mode" != publish ]; then
+    die "--managed-by applies only when publishing from devbin's own source tree
+       you are in VENDOR mode$([ -n "$into" ] && printf ' (--into was given)')"
+  fi
+  # AND THE MIRROR (issue 0103): a VENDOR flag while publishing was dropped in
+  # silence. Publishing writes no config, so --name, --alias and --lang have
+  # nothing to act on. --force is both modes': it replaces what is there.
+  if [ -n "$vendor_only" ] && [ "$mode" = publish ]; then
+    die "${vendor_only# } applies only when vendoring into a project
+       you are in PUBLISH mode, in devbin's own source tree with no --into
+       to vendor:  $DEVBIN_INVOKE install --into <project>${vendor_only}"
+  fi
+
+  # And what KIND of tree it is, which the manifest records (issue 0153), asked
+  # after the usage refusals, as upgrade asks it, and before anything is
+  # written: refused only at the manifest's write, a tree that cannot say left
+  # a runtime with no manifest behind.
+  manifest_source_token "$srcroot" >/dev/null ||
+    die "refusing to install from $srcroot (above), so nothing was written"
+
+  if [ "$mode" = publish ]; then
+    # The devbin config the dispatcher loaded lives in ITS process; handlers are
+    # reached by `exec` (lib/resolve:173) so nothing survives into this one.
+    # Loaded HERE and read HERE, before the target's config is loaded further
+    # down over the top of it.
+    cfg_load "$DEVBIN_DIR/config.yaml" >/dev/null 2>&1 ||
+      die "cannot read devbin's own config at $DEVBIN_DIR/config.yaml"
+    # `|| die_...` rather than a bare assignment, so the refusal happens HERE
+    # rather than as an unexplained errexit death at the assignment. There is no
+    # baked default any more: an unconfigured prefix is a configuration error,
+    # not a location to guess at.
+    if [ -z "$prefix" ]; then
+      prefix="$(install_prefix_configured)" || die_install_prefix_unset '--prefix <dir>'
+    fi
+    dstroot="$prefix"
+  else
+    # A MISSING TARGET IS REFUSED, NEVER MADE (issue 0258): target_refusal
+    # says what is there instead. A directory cd cannot enter keeps cd's own
+    # reason, above the refusal. The target is read by logical_dir, from the
+    # current directory alone (issue 0267): a bare cd found a relative name
+    # through CDPATH and read `-` as $OLDPWD, and its printed line went into
+    # the path.
+    target_refusal "${into:-.}"
+    logical_dir "${into:-.}" dstroot || die "cannot enter ${into:-.} (above)"
+  fi
+
+  # ANNOUNCED BEFORE ANYTHING IS WRITTEN. A discriminator that is merely
+  # correct is not enough: a misdetection has to land in the output rather than
+  # be discovered later in the filesystem.
+  if [ "$mode" = publish ]; then
+    printf 'mode: PUBLISH -- %s is devbin'"'"'s own source tree\n' "$srcroot"
+    printf '  publishing to: %s\n\n' "$dstroot"
+  else
+    printf 'mode: VENDOR -- installing devbin INTO a project\n\n'
+  fi
+
+  # --- the dirty gate ---------------------------------------------------------
+  #
+  # WHOLE TREE, not just the vendored set. The manifest's claim is "these bytes
+  # are commit X", and that is only true when nothing in the tree is uncommitted.
+  #
+  # NO --force. This gate is the entire reason the install tree exists: an
+  # install cut from a dirty checkout launders the same bytes through one more
+  # hop and gives them the LOOK of provenance, which is worse than today, since
+  # today's manifest at least says THESE BYTES MATCH NO COMMIT out loud.
+  #
+  # The gate itself is publish_gate in lib/install, which upgrade's publish
+  # passes through too.
+  if [ "$mode" = publish ]; then
+    publish_gate "$srcroot"
+  fi
+
+  # Refusing to install into the source is not fussiness. Devbin runs itself out
+  # of its own lib/ (devbin uses devbin); vendoring into bin/.devbin/lib/ would
+  # put a frozen copy AHEAD of the working tree in the dispatcher's own search
+  # order, so every edit to lib/ would stop taking effect and the test suite
+  # would go on passing against the copy.
+  # ANY dev tree, not just THIS one. The comparison was `dstroot = srcroot`,
+  # which only catches installing a tree into itself -- and the harm above has
+  # nothing to do with the two being the same. Installing from the machine
+  # install into devbin's source tree has a different source and an identical
+  # consequence, and it happened: bin/.devbin/lib/ and a manifest landed in the
+  # dev tree, past a guard that could not see them because the source was
+  # somewhere else.
+  if is_devbin_dev_tree "$dstroot"; then
+    die "cannot install devbin into a devbin SOURCE tree ($dstroot)
+       It runs lib/ in place; a vendored copy would sit ahead of the
+       working tree in the search order and every edit to lib/ would stop
+       taking effect, with the suite still green against the copy."
+  fi
+
+  # A HOMEBREW KEG IS HOMEBREW'S TO REPLACE (issue 0195), and that comes first:
+  # neither `upgrade` nor `--force`, the remedies below, may write into one.
+  install_managed_refusal "$dstroot" || return 1
+
+  # AN EXISTING INSTALL IS REPLACED ONLY WITH --force, in both modes, and in
+  # PUBLISH that is the one re-publish route (docs/dev-opt-brew.md, T2; issue
+  # 0213): replacing what every project vendors from is always a flag you typed.
+  # publish_replace refuses a tree devbin did not write.
+  if is_devbin_installed "$dstroot" && [ "$mode" = publish ]; then
+    if [ -z "$force" ]; then
+      warn "devbin is already installed at $dstroot"
+      warn "  to replace it:  $DEVBIN_INVOKE install --force"
+      return 1
+    fi
+    publish_replace "$srcroot" "$dstroot" || return 1
+    printf '\nA project carries the OLD bytes until it upgrades from here:\n'
+    vendor_from_hint "$dstroot"
+    return 0
+  fi
+  if is_devbin_installed "$dstroot" && [ -z "$force" ]; then
+    warn "devbin is already installed at $dstroot/bin/.devbin/lib"
+    warn "  to re-vendor the runtime:   $DEVBIN_INVOKE install --into $dstroot --force"
+    warn "  to update it in place:      cd $dstroot && bin/devbin upgrade"
+    return 1
+  fi
+
+  # A project that already has a config has already declared who it is, and that
+  # beats both the flags' default and the directory name. Re-installing must not
+  # rename a project or drop the alias its people type. Neither value creates a
+  # symlink any more -- `link_alias` is retired, see above -- but `project.name`
+  # is the identity every command prints and `project.alias` is the short name a
+  # project may choose to maintain BY HAND, so guessing either still rewrites a
+  # decision the project already made.
+  #
+  # The dispatcher loaded the SOURCE's config in its own process; this is a
+  # separate one, so loading the TARGET's here collides with nothing.
+  config="$dstroot/bin/.devbin/config.yaml"
+  if [ -f "$config" ] && cfg_load "$config" >/dev/null 2>&1; then
+    [ -n "$name" ] || name="$(cfg_get project.name)"
+    [ -n "$alias" ] || alias="$(cfg_get project.alias)"
+  fi
+
+  # LOWER-CASED. This no longer names a symlink -- devbin creates none -- but it
+  # is still the identity in help, die/warn output and doctor, and a capitalised
+  # one reads as a directory name leaking into a command surface. Project
+  # DIRECTORIES routinely are capitalised -- `Demo` for `demo`, in most of the
+  # first installs -- so taking the basename verbatim is wrong more often than
+  # it is right.
+  #
+  # It took several installs to find that out, because the derivation had never
+  # once run on a capitalised directory: every capitalised project happened
+  # to pass an explicit `--name`, and those that took the default (demo_config,
+  # demo_cli) already had lowercase directories, so the default was accidentally
+  # correct. A later one was the first to take the default on a capitalised
+  # directory and it produced `bin/Demo`.
+  #
+  # An EXPLICIT `--name` is validated at parse time instead of being lowered
+  # here: a derivation devbin performs is devbin's to get right silently, but a
+  # value a person typed is an instruction, and quietly changing it would hide
+  # the fact that the name they asked for is not one they can have.
+  [ -n "$name" ] || name="$(printf '%s' "${dstroot##*/}" | tr '[:upper:]' '[:lower:]')"
+  version="$(devbin_runtime_version)"
+  langs="${langs# }"
+
+  if [ "$mode" = publish ]; then
+    printf 'Publishing devbin %s to %s\n\n' "$version" "$dstroot"
+  else
+    printf 'Installing devbin %s into %s\n\n' "$version" "$dstroot"
+  fi
+
+  # PUBLISH goes through `publish_install` -- the single writer shared with
+  # `upgrade`'s dev-tree mode -- so the two verbs cannot drift about what an
+  # install tree contains. VENDOR keeps its own loop because it writes a project
+  # half that an install never gets.
+  if [ "$mode" = publish ]; then
+    record="$(publish_install "$srcroot" "$dstroot" "$version" "$managed")" ||
+      die "failed to publish the install to $dstroot"
+    printf '  vendored   %d files (bin/devbin, bin/.devbin/lib/)\n' "$(publish_copied "$record")"
+    while IFS= read -r rel; do
+      [ -z "$rel" ] || printf '  removed    %s (devbin no longer ships it)\n' "$rel"
+    done <<<"$(publish_removed "$record")"
+  else
+    # Read whole, with its status, before the loop: in the loop's heredoc a
+    # failed enumeration was a shorter vendor at rc 0 (issue 0127).
+    paths="$(vendored_paths "$srcroot")" ||
+      die "cannot list what devbin ships from $srcroot (the error above names it)"
+    # And every file on the list read, before one is copied (issue 0144). The
+    # loop below stops at the first file cp cannot read, and on --force that
+    # left each file before it replaced under the old manifest, which doctor
+    # then reads as edited in place.
+    source_readable "$srcroot" "$paths" ||
+      die "cannot read the file(s) named above in $srcroot, so nothing was installed into $dstroot"
+    # What the previous manifest recorded, read BEFORE anything below rewrites
+    # it: the only files a re-vendor may retire (issue 0129). Absent on a first
+    # install, which has nothing to retire.
+    recorded=""
+    if [ -f "$(manifest_path "$dstroot")" ]; then
+      recorded="$(manifest_entries "$dstroot" | cut -f2)" ||
+        die "cannot read the manifest at $(manifest_path "$dstroot")"
+    fi
+    while IFS= read -r rel; do
+      [ -n "$rel" ] || continue
+      src="$(vendor_source_path "$srcroot" "$rel")" ||
+        die "cannot locate '$rel' in the source at $srcroot"
+      copy_vendored "$src" "$dstroot/$rel" || die "failed to write $dstroot/$rel"
+      count=$((count + 1))
+    done <<<"$paths"
+    printf '  vendored   %d files (bin/devbin, bin/.devbin/lib/)\n' "$count"
+    # A RE-VENDOR RETIRES WHAT THE SOURCE STOPPED SHIPPING (issue 0129). It
+    # copied and deleted nothing, so a retired file stayed and dropped out of
+    # the manifest -- and a retired lib/cmd/<name> went on dispatching, where
+    # no later upgrade could reach it, since upgrade retires only what the
+    # manifest lists. Edited or not, as --force copies over edits too; upgrade
+    # is the verb that releases an edited one to the project instead.
+    removed="$(remove_unshipped "$dstroot" "$paths" "$recorded")" ||
+      die "failed to remove from $dstroot a file devbin no longer ships"
+    while IFS= read -r rel; do
+      [ -z "$rel" ] || printf '  removed    %s (devbin no longer ships it)\n' "$rel"
+    done <<<"$removed"
+  fi
+
+  # THE PROJECT HALF IS EXACTLY WHAT AN INSTALL DOES NOT GET.
+  #
+  # No config.yaml, no cmd/, no help/ -- and that absence is not tidiness, it is
+  # the mechanism. `bin/devbin` dies without a config.yaml, so an install tree
+  # cannot be run FROM; it can only be vendored from. The rule "always a --from,
+  # never a cwd" therefore needs no check of its own and has no flag that turns
+  # it off, which is the only kind of rule this project trusts.
+  if [ "$mode" = publish ]; then
+    printf '  omitted    the project half (no config.yaml, cmd/ or help/)\n'
+    printf '             -- which is what makes this an install and not a project\n'
+  else
+    # Created, never populated: an empty cmd/ is the invitation, and anything
+    # already in it is left exactly as it is.
+    mkdir -p "$dstroot/bin/.devbin/cmd" "$dstroot/bin/.devbin/help"
+
+    if [ -f "$config" ]; then
+      printf '  kept       bin/.devbin/config.yaml (yours -- not touched)\n'
+    else
+      starter_config "$name" "$alias" "$langs" "$version" >"$config"
+      printf '  wrote      bin/.devbin/config.yaml (starter)\n'
+    fi
+  fi
+
+  # In PUBLISH mode `publish_install` already wrote it, as part of being the one
+  # writer. Writing it a second time here would work and would mean the manifest
+  # has two authors again, which is the thing that function exists to prevent.
+  #
+  # IT REFUSES A COPY IT CANNOT READ (issue 0144), naming each, and keeps the
+  # manifest that was there. The source was read in full above, so what reaches
+  # this is a copy that came out unreadable -- a umask that strips the owner's
+  # read bit does it to every file -- and the files are then in place, under
+  # the old manifest or none. It exited 0 over a manifest of no rows.
+  if [ "$mode" != publish ]; then
+    manifest_write "$dstroot" "$srcroot" "$version" ||
+      die "failed to write the manifest"
+  fi
+  printf '  wrote      %s\n' "$DEVBIN_MANIFEST_REL"
+
+  # DEVBIN'S LINE-ENDING BLOCK IN THE PROJECT'S .gitattributes (ST0008), so
+  # every clone checks the runtime out LF. A project's file, written only
+  # between devbin's markers (lf_block_write). Not on a publish: an install is
+  # vendored from, never cloned.
+  if [ "$mode" != publish ]; then
+    lf="$(lf_block_write "$dstroot")" ||
+      die "devbin is installed in $dstroot, but its line-ending block is not in .gitattributes (above)"
+    lf_block_said "$lf"
+  fi
+
+  if [ "$mode" = publish ]; then
+    printf '\nPublished. Consumers vendor from here:\n'
+    vendor_from_hint "$dstroot"
+    return 0
+  fi
+
+  printf '\nNext:\n'
+  printf '  cd %s\n' "$dstroot"
+  printf '  bin/devbin doctor      check the install\n'
+  printf '  bin/devbin help        the command surface you have\n'
+  return 0
+}
+
+main "$@"

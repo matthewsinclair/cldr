@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+#
+#
+# The built-in `infra` -- WHAT THIS ESTATE'S CONFIGURATION SHOULD BE, AND
+# WHETHER IT IS.
+#
+# THE PROBLEM. An estate's configuration drifts with no moment of carelessness
+# to find. Every record is correct against the instructions in force the day it
+# was written; providers then revise their recommendations, and domains
+# onboarded at different dates freeze different snapshots. Nothing compares them
+# to each other, so the drift is invisible BY CONSTRUCTION rather than by
+# neglect. An audit of one 11-domain estate found five distinct inconsistencies,
+# including a domain whose SPF authorised a sender it had no DKIM record for --
+# which makes that domain's own legitimate mail bit-for-bit indistinguishable
+# from a forgery of it.
+#
+# THE CARDINAL CONSTRAINT, and every choice made here follows from it:
+# EVERY CHECK MUST BE ABLE TO GO RED. The failures this estate has produced were
+# all controls that could only report success -- absent reporting that reads as
+# clean reporting, a cached TTL that reads as a configured one, `disposition=
+# none` on ten of ten records while five of them were forged. A verifier built
+# without that constraint reproduces the class it exists to catch.
+#
+# WHY A PROFILE IS NEVER DEFAULTED. devbin ships MACHINERY and never a project's
+# data: a default profile would be one project's records, or one machine's
+# layout, baked into a tool every other project vendors. So the profile is
+# absent by default, and every verb needing one fails loudly, naming every path
+# it tried. That is also what makes this safe as a framework builtin -- a
+# builtin with no profile is INERT rather than wrong, so it costs an estate that
+# never uses it bytes and not behaviour.
+#
+set -euo pipefail
+
+# shellcheck source=lib/helpers
+. "${DEVBIN_LIB:?run me through bin/devbin}/helpers"
+# shellcheck source=lib/config
+. "$DEVBIN_LIB/config"
+# shellcheck source=lib/infra
+. "$DEVBIN_LIB/infra"
+# shellcheck source=lib/infra.dns
+. "$DEVBIN_LIB/infra.dns"
+# shellcheck source=lib/infra.check
+. "$DEVBIN_LIB/infra.check"
+
+# THE HEREDOC IS UNQUOTED SO THE DISPATCHER'S NAME RENDERS, AND
+# $DEVBIN_INFRA_PROFILE IS ESCAPED SO IT DOES NOT. Both halves are load-bearing
+# and the second is the one that bites: unquoting alone substitutes the env var
+# too, which is unset, so the help silently drops a resolution step and prints
+# `--profile <path>, , ./infra.yaml`. Measured, not reasoned about.
+#
+# THE NAME IS ${DEVBIN_INVOKE:-bin/devbin}, AS IN EVERY OTHER BUILT-IN (issue
+# 0107). For a time it was $DEVBIN_NAME, which replaced a literal
+# `devbin` that resolved to nothing in a vendored project: in one project, whose
+# dispatcher was then `demo`, it rendered `demo infra`. That launcher is
+# retired and bin/devbin is how every project types it, so $DEVBIN_NAME named a
+# command that no longer exists -- the defect the earlier fix closed, come
+# back. The infra.d children carry the same form. $DEVBIN_NAME stays the
+# diagnostic prefix `die` and `warn` print.
+#
+# THE VERB LIST WAS ONCE HALF THE SURFACE. `profiles` and `mail`
+# are routed by devbin's `.d/` descent BEFORE this file is reached, which is the
+# right mechanism and exactly why they were missing here: nothing in the
+# dispatch path needs this list, so only a reader does, and no test could miss
+# them. An instrument silent about part of its own surface cannot teach anyone
+# the verb exists -- reported by a user who found `profiles` only by
+# already knowing to look.
+#
+# THE REFERENCE'S PATH IS $(lib_rel), NOT SPELLED (issue 0121). It read
+# bin/.devbin/lib/infra.reference.yaml, which is right in every vendored
+# project and names nothing in devbin's own checkout, where lib/ runs in place
+# -- the defect 0112 fixed in `devbin devbin`, in a second handler.
+#
+# The lines below carry NO BACKTICKS on purpose. This heredoc is unquoted so
+# the dispatcher's name renders, which makes a backtick live command
+# substitution: the first draft of this change put `.d/` in the help text, and
+# it was refused by shellcheck as a command ending in `/`. The comment is where
+# prose goes.
+usage() {
+  cat <<USAGE
+usage: ${DEVBIN_INVOKE:-bin/devbin} infra <verb> [--profile <path>]
+
+  init      measure live domains and print a profile to review (no --profile)
+  show      print the resolved profile and where it was found
+  check     verify live DNS and mail records against the profile
+  profiles  compare every profile in a directory, refusing a domain claimed twice
+  mail      DMARC report handling: mail dmarc parse|report
+
+The profile is searched for in this order, and a miss names every path:
+  --profile <path>, \$DEVBIN_INFRA_PROFILE, <project root>/infra.yaml,
+  \$XDG_CONFIG_HOME/devbin/infra.yaml (default ~/.config/devbin/infra.yaml)
+
+The annotated worked example ships in devbin's runtime, in this project -- read
+it, copy it:
+  $(lib_rel)/infra.reference.yaml
+USAGE
+}
+
+verb="${1:-}"; shift || true
+explicit=""
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --profile) explicit="${2:?--profile needs a path}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+
+case "$verb" in
+  ""|-h|--help) usage; exit 0 ;;
+  show|check) ;;
+  *)
+    # Sub-families (mail, dns, runtime) are routed by devbin's own `.d/`
+    # dispatch before ever reaching here, so an unknown verb at this point is
+    # genuinely unknown rather than merely unrouted.
+    die "infra: unknown verb \`$verb\` (try: ${DEVBIN_INVOKE:-bin/devbin} infra --help)"
+    ;;
+esac
+
+profile="$(infra_resolve_profile "$explicit")" || exit 1
+cfg_load "$profile"
+# The raw path, for the one question cfg_* structurally cannot answer: was a key
+# WRITTEN? A valueless key produces no cache row and is indistinguishable from
+# one nobody typed.
+_DEVBIN_INFRA_FILE="$profile"
+infra_validate_profile || die "infra: the PROFILE is malformed. Nothing was checked against the live estate -- fix the profile first."
+
+case "$verb" in
+  show)
+    printf 'profile: %s\n' "$profile"
+    printf 'name:    %s\n' "$(cfg_get name '(unnamed)')"
+    printf 'domains:\n'
+    for h in $(cfg_list domains); do
+      printf '  %-16s %s\n' "$h" "$(cfg_get "domains.$h.name")"
+    done
+    ;;
+  check)
+    # THE unreviewed GATE, and it REFUSES rather than warns. `init` emits
+    # anything it could not confidently propose into `unreviewed:`; five
+    # deviations reviewed down to one is still an estate with an unratified
+    # target, and a tool that goes green at "mostly reviewed" has rebuilt the
+    # false green it was written to remove. Accepting a deviation is deleting a
+    # key, which is an act; leaving it would be an omission.
+    unrev="$(infra_unreviewed_keys)"
+    if [ -n "$unrev" ]; then
+      {
+        printf 'infra: %s unreviewed deviation(s) in the profile. Refusing to check.\n' \
+          "$(printf '%s\n' "$unrev" | grep -c .)"
+        printf '%s\n' "$unrev" | sed 's/^/  /'
+        # NOT "proposed by `init`", which is what this once said:
+        # `infra` accepted show|check and there was NO init verb, so the sentence
+        # named a command the tool refuses, in the same breath as refusing. It
+        # also carried the only SC2016 breach left in the tree once lib/infra's
+        # was suppressed -- one line, two faults, and the lint one is what made
+        # anybody look at the sentence.
+        printf '\nEach is a deviation the profile records and nobody has ratified.\n'
+        printf 'Delete the key to accept the deviation, or edit the target to fix it.\n'
+      } >&2
+      exit 1
+    fi
+    # A RESOLVER IS A HARD REQUIREMENT, CHECKED ONCE. Without one every domain
+    # would report "could not measure", which is true and useless: the fault is
+    # one missing tool, not twenty unreachable domains, and twenty copies of it
+    # buries the single line that can be acted on.
+    infra_dns_have_tool ||
+      die "infra check: dig not found. The DNS and mail legs read AUTHORITATIVE
+       records, and there is deliberately no fallback to the system resolver --
+       a cached TTL reads as a configured one, which is the false green this
+       command exists to refuse."
+    # And the budget and the pause, once, before any domain is asked about: a
+    # malformed one fails quietly per query (lib/infra.dns says how).
+    infra_dns_assert_knobs "infra check"
+
+    while IFS="$(printf '\t')" read -r handle fqdn; do
+      [ -n "${fqdn:-}" ] || continue
+      infra_check_domain "$handle" "$fqdn"
+    done <<EOF
+$(infra_domain_pairs)
+EOF
+    infra_check_consistency
+    # Once per run, after every domain: why any read met a reply without AA.
+    infra_check_cause
+    infra_check_report "$profile" "$(cfg_get name '(unnamed)')"
+    ;;
+esac

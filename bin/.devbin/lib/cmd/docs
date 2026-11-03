@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+#
+# The built-in `docs`. One option ships.
+#
+# `agents` is identical across the projects that have it -- same command, same
+# guard rails, same warning. `completions` (two of four), `index` (one) and
+# `publish` (one) are not: they encode where a project keeps its generated
+# output and what it publishes to. Those are project handlers.
+#
+# It drives Intent, which is the methodology these projects share rather than an
+# assumption devbin is making about anyone.
+#
+# `treeindex` SHIPPED HERE ONCE AND WAS REMOVED, not deprecated.
+# Intent v3 retired `intent treeindex` with no replacement, so the option
+# was a catalogue row that lists cleanly, resolves cleanly and can never succeed
+# the day a project moves -- which is the exact shape `check_commands` exists to
+# refuse, pointed at devbin itself. Issue 0016 had already measured the v3
+# refusal THROUGH THIS FUNCTION and fixed only the dropped exit status.
+#
+set -euo pipefail
+
+# shellcheck source=lib/gatecmd
+. "${DEVBIN_LIB:?run me through bin/devbin}/gatecmd"
+
+# builtin_docs_agents -- regenerate AGENTS.md from project state.
+builtin_docs_agents() {
+  require_tool intent "Install Intent: see intent/docs at the Intent install"
+  # The warning is not decoration. AGENTS.md looks like an ordinary Markdown
+  # file, and a hand edit to it is destroyed here without comment. Every project
+  # that had this command printed this line.
+  warn "AGENTS.md is generated -- a hand edit is lost here"
+  # Status made explicit rather than left to position. As the function's last
+  # command this already propagated -- correctly, and BY ACCIDENT OF WIRING: one
+  # appended line (a log, a cleanup, a `return 0`) would have swallowed it
+  # silently -- issue 0016's defect arriving by the other door.
+  local rc=0
+  intent agents sync || rc=$?
+  [ "$rc" -eq 0 ] ||
+    warn "intent agents sync failed (exit $rc) -- AGENTS.md NOT regenerated"
+  return "$rc"
+}
+
+run_builtin_gate docs "$@"

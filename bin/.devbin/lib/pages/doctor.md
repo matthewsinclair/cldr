@@ -1,0 +1,145 @@
+    bin/devbin doctor [<check>]
+
+Checks this install and reports what it finds, then runs the project's own checks in `bin/.devbin/cmd/doctor.d/`. It exits 1 if anything failed. With `<check>`, it runs that one project check alone.
+
+In devbin's own checkout, doctor's first line is the version line, byte for byte as `bin/devbin --version` prints it there, on a line of its own. No row repeats it, and wherever doctor prints a version line, it prints it whole and with nothing added.
+
+## What it checks
+
+In this order:
+
+    dispatcher      bin/devbin exists and is executable
+    runtime         devbin's runtime library is present; names the version
+                    running and whether it is vendored
+    config          bin/.devbin/config.yaml validates: a missing
+                    project.name, an unknown key, a yes-or-no key holding
+                    any other word, a command line with no words in it,
+                    and a release: value the block cannot take each fail
+    languages       which languages project.languages arms devbin's
+                    language-scoped built-ins for; a note when none
+    version         the project's version reads from project.version_from
+                    (VERSION by default); a note naming the key, and what
+                    to do for that file, when it does not, since version
+                    show and version check refuse
+    release         a note when a release: block is declared and release
+                    is not enabled
+    log             every log: key sits where a run reads it: beside an
+                    option's own run:, or on a command whose own line runs;
+                    one that nothing reads fails, naming what runs instead
+    devbin_version  the running devbin satisfies the project's
+                    devbin_version; a note when none is declared
+    manifest        every vendored file matches its recorded checksum, and
+                    one devbin cannot read fails by name, as does a manifest
+                    it cannot read or one that is missing; a file in the
+                    vendored runtime that the manifest does not own is a note
+    line endings    git holds bin/devbin and every file under bin/.devbin/
+                    to LF, asked with git check-attr eol, so a later rule
+                    that undoes devbin's block is found too; each file not
+                    held is named. A file there carrying CR bytes fails by
+                    name, with CRLF line endings as the cause. Outside a
+                    git checkout the rule is not checked, and that is a note
+    commands        how many commands are offered; fails only when there
+                    are none, and notes any offered with nothing to run
+    handlers        every file in bin/.devbin/cmd/ is reachable: each is
+                    executable, and each <name>.d/ has an executable
+                    <name> beside it (doctor.d/ excepted)
+    shadowing       project names standing where devbin ships its own, as
+                    a whole command or as one option; overriding is
+                    supported, so each is a note
+    launcher        bin/devbin is executable; a bin/<project.name> link to
+                    devbin is noted as a retired alias, and a
+                    project.alias shortcut chained through that link is
+                    noted with the command that repoints it
+    source          whether the devbin this project was vendored from has
+                    moved: level, behind, moved, ahead, differs or
+                    unknown, each said apart; only behind suggests an
+                    upgrade. moved is a source whose commit moved on
+                    while no vendored file changed: it passes, naming
+                    both commits, and is not offered as an update. unknown
+                    names what this machine is missing, so that no switch
+                    names a source (see bin/devbin help upgrade). A
+                    project also gets the tree its next upgrade reads, by
+                    its tree line alone, as this project's devbin reads that
+                    tree's tree line, which is what --version prints from
+                    the same devbin, and beneath it, on a row of its own,
+                    what named it: DEVBIN_INSTALL_PREFIX, the link
+                    ~/.local/bin/devbin, or HOMEBREW_PREFIX's opt/devbin,
+                    since no DEVBIN_INSTALL_PREFIX or link names one
+    tree            in devbin's own checkout only: the version line doctor
+                    printed first names this checkout's commit. It fails
+                    when git cannot read the checkout, so the line names no
+                    commit
+    switch          the machine's choice among dev, opt and brew (bin/devbin
+                    help use). It fails when the link is not the first
+                    devbin on PATH, compared as resolved directories; with
+                    no link, when the first devbin on PATH is not
+                    Homebrew's keg, or would not run, or none is on PATH
+                    at all; when the link leads to no devbin tree; and when
+                    the opt install the switch names has the manifest form
+                    written before the tree line, naming install --force.
+                    A keg in that form is a note naming brew upgrade
+                    devbin, since only a later release fixes it. A machine
+                    pointer left from before the link is a note: nothing
+                    reads it, and it is removed by hand. With no link and no
+                    Homebrew devbin, a note says so, why, and what to do:
+                    export HOMEBREW_PREFIX as brew shellenv does when it is
+                    unset or relative, or install devbin with Homebrew
+    bash            which bash is running, against the >= 5 floor
+    location        under WSL only: where the project sits. One on a
+                    Windows drive (/mnt/<letter>) is a note naming the
+                    drive, the cause and the fix, never a failure; one in
+                    WSL's own filesystem passes. Off WSL there is no row
+
+## Three outcomes, not two
+
+    ok      the check passed
+    FAIL    broken; the run exits 1
+    note    true, worth saying, and not a fault
+
+The note is the load-bearing one. devbin offers `build` everywhere by default, as a name for the project to fill with its own `run:` or handler, and until it does, doctor notes it as offered with nothing to run, and says for each name what would make it run. That is the design working, and calling it a fault would turn doctor red on a correct install; a tool whose clean state is red trains people to ignore it.
+
+## The count
+
+    <n> checks, <f> failed, <m> notes
+
+A note is not a check: it is reported and not counted. A run that counts no checks at all fails on that alone rather than exiting 0 with a clean bill, because doctor is the easiest place in the framework to write a checker that examines nothing and pronounces the patient well.
+
+The count moves from project to project -- a `project.alias` shortcut pointing straight at `bin/devbin`, a source that is level, and every project check each add to it -- so no number is written here.
+
+A config that does not parse is refused by `bin/devbin` itself, naming the line, before doctor starts. One that parses but fails validation fails the config check, which names each problem beneath it, and the rest of the list still runs and is counted.
+
+A vendored file devbin cannot read, such as one at mode 000, fails the manifest check the same way: it is named as `unreadable`, never as edited, since nobody can tell whether it was, and the rest of the list still runs and is counted. So does the manifest itself when devbin cannot read it: it fails by name rather than reading as a manifest with nothing in it. Make each readable before anything else: `bin/devbin upgrade` refuses to run while one is not.
+
+An install with no manifest at all -- `bin/.devbin/lib/` present and `bin/.devbin/manifest.sha256` not -- fails the same check: no vendored file can be checked, so whether one was edited here cannot be told, and it is never read as clean. `devbin_version` fails beside it, running `unknown`, since the runtime's version is read from the manifest and never from the project's own VERSION. The fix replaces every vendored file, an edit included: `bin/devbin upgrade --from <dir> --force`, or a re-install with `install --into <project> --force`. A plain `upgrade` refuses it, so devbin_version's own fix points at the manifest's rather than at `upgrade`. A project devbin was never installed in has no `bin/.devbin/lib/` and is not this case: a first install writes the manifest. A manifest that records no files, cut to its header or to nothing, fails the same way: it vouches for no vendored file, upgrade refuses it as it refuses a missing one, and the runtime's version is the one its header names, or `unknown` when it names none, never the project's own VERSION.
+
+## Your project's own checks
+
+Every executable in `bin/.devbin/cmd/doctor.d/` runs after the built-in checks, in name order, from the project root with no stdin, and is counted into the same summary. `bin/devbin doctor <check>` runs one alone and skips the built-in checks; a name that is not an executable there is refused.
+
+A line whose first word is `ok`, `FAIL` or `note` counts exactly as doctor's own do, under the check's name, and any other line it prints, stderr included, is shown beneath as detail. The exit status is read as well, and neither hides the other:
+
+    a FAIL line                    fails, even when the check exits 0
+    a non-zero exit, no FAIL line  fails, naming the exit status
+    exit 0, no ok or FAIL line     one pass, by the check's name
+
+A file there that is not executable, or a directory, is a note and is not run. A check is not time-limited, so one that reaches another machine should bound itself.
+
+## The upgrade offer
+
+At a terminal, `bin/devbin doctor` and bare `bin/devbin` first ask whether to upgrade, and only when the devbin this project was vendored from has moved forward past it and changed a vendored file -- the `behind` state above. A source whose commit moved on with no vendored file changed is not offered. A source that is behind the project, or differs in no known direction, is never offered: nothing says it is newer, and an upgrade from an older source can take the project backwards. Only `y` or `yes`, in any case, runs `bin/devbin upgrade`; any other answer, or none, leaves the project as it is. `DEVBIN_NO_UPDATE_NOTICE=1` turns the offer off, along with devbin's once-a-day update notice.
+
+## A checkout on a Windows drive
+
+Under WSL a project cloned onto a Windows drive works, but slowly: WSL reaches the drive through its bridge to Windows, exec bits come from the mount options, and names ignore case. doctor says so and does not fail on it, since a refusal would stop work that still runs. The fix is to clone the project again inside WSL's own filesystem, under `~/`, and work there.
+
+WSL is recognised the way it marks itself: its interop handler at `/proc/sys/fs/binfmt_misc/WSLInterop` (`WSLInterop-late` where systemd runs), or `microsoft` in the kernel release. So a Linux container on a WSL 2 kernel, such as one under Docker Desktop, reads as WSL too. `DEVBIN_WSL=1` or `DEVBIN_WSL=0` overrides that, and any other value is refused before doctor checks anything. Drives are looked for under `/mnt`; where `/etc/wsl.conf` moves WSL's automount root, `DEVBIN_WSL_MOUNT_ROOT` names it, since doctor does not read wsl.conf.
+
+## What it does not check
+
+Whether `project.languages` matches the languages another tool records for the project -- Intent's list, for one. They are different facts and are not meant to match: `project.languages` is gate scope, the languages devbin arms its language-scoped built-ins for here, while Intent's list records what the source is written in.
+
+## See also
+
+    bin/devbin help --why       the listing, plus what is not here and why
+    bin/devbin help upgrade     re-syncing the vendored runtime
+    bin/devbin help vendor      comparing the vendored runtime with its source

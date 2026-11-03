@@ -1,0 +1,47 @@
+#!/usr/bin/env bats
+#
+# {{NAME}} -- scaffolded by `{{DEVBIN}} new {{NAME}}`.
+#
+# The resolves-and-is-offered test asserts the command RESOLVES, which is the
+# thing a scaffold can know is true. The rest is yours.
+#
+# Test names are EVALUATED by bats, so no backticks and no $(...) in them.
+
+setup() {
+  # Walk UP to the project root rather than counting `..`. This stub is written
+  # into whatever test directory the project already has -- `tests/` in most
+  # projects, `tests/unit/` in devbin's own -- and a fixed depth is correct in
+  # exactly one of those and silently wrong in the rest. It was `../..`, so a
+  # scaffold in a `tests/`-at-root project failed both of these tests out of the
+  # box, about nothing.
+  if [ -z "${DEVBIN_HOME:-}" ]; then
+    DEVBIN_HOME="$BATS_TEST_DIRNAME"
+    while [ "$DEVBIN_HOME" != / ] && [ ! -x "$DEVBIN_HOME/bin/devbin" ]; do
+      DEVBIN_HOME="$(cd "$DEVBIN_HOME/.." && pwd)"
+    done
+  fi
+  # bin/devbin, the launcher every project has: `new` renders it as that name
+  # wherever it was run from. The fallback covers a stub from a devbin that
+  # rendered an absolute path, which fails -x here.
+  DEVBIN="$DEVBIN_HOME/{{DEVBIN}}"
+  [ -x "$DEVBIN" ] || DEVBIN="$DEVBIN_HOME/bin/devbin"
+  # STAND IN THE PROJECT. The dispatcher refuses to run when the caller's
+  # directory is outside its own project -- a devbin reached from elsewhere acts
+  # on ITS OWN tree from wherever you are, which is how a bare `devbin` in an
+  # unrelated directory printed another project's catalogue at rc 0. DEVBIN_HOME
+  # is that root by construction: the walk above stops at the directory holding
+  # bin/devbin. Without this the scaffold ships tests that fail out of the box,
+  # which is the state this stub's own comment above was written about.
+  cd "$DEVBIN_HOME" || return 1
+}
+
+@test "{{NAME}} resolves and is offered in help" {
+  run "$DEVBIN" help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"{{NAME}}"* ]]
+}
+
+@test "{{NAME}} answers --help" {
+  run "$DEVBIN" {{NAME}} --help
+  [ "$status" -eq 0 ]
+}

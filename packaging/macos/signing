@@ -1,0 +1,7 @@
+# How cldr's macOS binary is signed. The one place these facts live:
+# bin/.devbin/cmd/macos signs and checks with them. key=value lines.
+identity=Developer ID Application: Geodica Pty Ltd (76BQL8L47U)
+team=76BQL8L47U
+keychain=geodica.apple
+id.cldr=com.geodica.cldr
+requirement.cldr=identifier "com.geodica.cldr" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = "76BQL8L47U"

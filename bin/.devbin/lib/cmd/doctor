@@ -1,0 +1,1341 @@
+#!/usr/bin/env bash
+#
+# The built-in `doctor` -- check this install and say what is wrong with it.
+#
+# Sources the whole stack rather than taking its answers from the environment,
+# because half of what it checks is whether that stack loads at all. It is a
+# separate process, so the config cache does not cross to it and `cfg_load` runs
+# here again -- which is not overhead but the point: doctor is the thing that
+# finds out whether this project's config parses.
+#
+# THE RULE THIS COMMAND IS BUILT AROUND: a gate that examines nothing and exits
+# 0 is a false green, and doctor is the easiest place in the framework to write
+# one. So the count of checks RUN is part of the output, and a run that managed
+# to check nothing fails on that alone. AC-04.13 taught this to `run_all` and a
+# bare command; it applies with more force to a command whose entire output is
+# a verdict about correctness.
+#
+set -euo pipefail
+
+# shellcheck source=lib/helpers
+. "${DEVBIN_LIB:?run me through bin/devbin}/helpers"
+# shellcheck source=lib/config
+. "$DEVBIN_LIB/config"
+# shellcheck source=lib/builtins
+. "$DEVBIN_LIB/builtins"
+# shellcheck source=lib/runlog
+. "$DEVBIN_LIB/runlog"
+# shellcheck source=lib/resolve
+. "$DEVBIN_LIB/resolve"
+# shellcheck source=lib/install
+. "$DEVBIN_LIB/install"
+
+CHECKS=0
+FAILURES=0
+NOTES=0
+# The version line doctor prints first, in devbin's own dev tree only, and
+# empty anywhere else: read once, so the row check_tree prints is about the
+# line that was printed.
+TREE_LINE=""
+
+# Three outcomes, not two. A FAILURE is something broken; a NOTE is something
+# true and worth saying that is not an error -- `build` offered with nothing
+# behind it is tier 4, a name only, working as designed, and reporting it as a
+# fault would make devbin's own doctor red on a correct install.
+_pass() {
+  CHECKS=$((CHECKS + 1))
+  printf '  %sok%s    %s\n' "${green:-}" "${reset:-}" "$*"
+}
+
+_fail() {
+  CHECKS=$((CHECKS + 1))
+  FAILURES=$((FAILURES + 1))
+  printf '  %sFAIL%s  %s\n' "${red:-}" "${reset:-}" "$*"
+}
+
+_note() {
+  NOTES=$((NOTES + 1))
+  printf '  %snote%s  %s\n' "${dim:-}" "${reset:-}" "$*"
+}
+
+_detail() { printf '        %s\n' "$*"; }
+
+# check_dispatcher -- the launcher itself.
+check_dispatcher() {
+  local d="$PROJECT_ROOT/bin/devbin"
+  if [ ! -f "$d" ]; then
+    _fail "dispatcher: bin/devbin is missing"
+    return 0
+  fi
+  if [ ! -x "$d" ]; then
+    _fail "dispatcher: bin/devbin is not executable"
+    _detail "fix: chmod +x bin/devbin"
+    return 0
+  fi
+  _pass "dispatcher: bin/devbin"
+  return 0
+}
+
+# check_runtime -- the vendored library, and which one is actually in use.
+check_runtime() {
+  local version
+  version="$(devbin_runtime_version)"
+  if [ ! -f "$DEVBIN_LIB/helpers" ]; then
+    _fail "runtime: no lib/helpers under $DEVBIN_LIB"
+    return 0
+  fi
+  if is_devbin_installed "$PROJECT_ROOT"; then
+    _pass "runtime: devbin $version, vendored at bin/.devbin/lib"
+  else
+    # The devbin source checkout case. Worth SAYING rather than passing
+    # silently: a project that thinks it is installed and is really running out
+    # of a sibling checkout gets a different answer from `upgrade` than it
+    # expects.
+    _pass "runtime: devbin $version, running from this checkout's own lib/ (not installed)"
+  fi
+  return 0
+}
+
+# check_config -- present, parses, and validates against the schema.
+check_config() {
+  local file="$DEVBIN_DIR/config.yaml" line errors
+  if [ ! -f "$file" ]; then
+    _fail "config: no config.yaml at $file"
+    _detail "fix: devbin install --into $PROJECT_ROOT"
+    return 0
+  fi
+  # Already loaded by the dispatcher in ITS process, not this one. Loading here
+  # is what proves it parses; the validate below is what proves it means
+  # something. Both are silenced and reported rather than allowed to die,
+  # because doctor's job is to finish the list and tell you everything.
+  if ! cfg_load "$file" >/dev/null 2>&1; then
+    _fail "config: $file does not parse"
+    _detail "run: bin/devbin help    to see the parse error in full"
+    return 0
+  fi
+  # CAPTURED IN AN if, NEVER PIPED (issue 0120). The report used to be
+  # `cfg_validate 2>&1 >/dev/null | while ...`, and under pipefail that
+  # pipeline took cfg_validate's status -- 1, on the very failure it was
+  # reporting -- so errexit ended doctor there: exit 1, every later check
+  # unreached, no count. The status is read here, where errexit does not act.
+  if ! errors="$(cfg_validate 2>&1 >/dev/null)"; then
+    _fail "config: $file has keys or values the schema does not know"
+    while IFS= read -r line; do
+      [ -z "$line" ] || _detail "$line"
+    done <<<"$errors"
+    return 0
+  fi
+  _pass "config: bin/.devbin/config.yaml parses and validates"
+  return 0
+}
+
+# check_release -- a release: block that nothing reads (ST0007).
+#
+# `release` is opt-in, and a release: block does not enable it by being
+# present: that would be a second activation route for one row. So a block in
+# a project that has not enabled `release` configures nothing, and inert
+# configuration otherwise says nothing. A note, not a failure: declaring the
+# block before enabling the command is a legitimate order to adopt in.
+#
+# A config that does not load returns quietly HERE because check_config, which
+# runs first, already FAILS on it by name; a second report would say the same
+# thing about a file this check could not read.
+check_release() {
+  cfg_load "$DEVBIN_DIR/config.yaml" >/dev/null 2>&1 || return 0
+  [ -n "$(cfg_list release)" ] || return 0
+  command_active release && return 0
+  _note "release: a release: block is declared and inert -- release is not enabled here"
+  _detail "enable it with commands.release.enabled: true, or remove the block"
+  return 0
+}
+
+# check_log_keys -- every `log:` in config sits where something reads it
+# (issue 0133).
+#
+# `log:` is read only beside an option's own `run:`, which
+# run_option seals under it, and on a command whose own line runs -- config's
+# `commands.<cmd>.run`, or the catalogue's -- which run_command seals under it.
+# Everywhere else a handler runs the command, devbin's or the project's, and
+# seals as it seals, whatever the key says. The key still validates, since
+# validation is schema-only, and until 0133 nothing said that nothing read it:
+# check.md and test.md told a reader that `log: false` alone ran a shipped
+# option unsealed.
+#
+# A FAILURE, NOT A NOTE: the project asked for a seal, or for none, and does not
+# get it. Measured before it shipped: every `log:` key in the projects it was
+# measured on is read, so none of them turns red on this.
+#
+# WHETHER A RUN READS THE KEY IS command_tier's AND option_run_tier's ANSWER
+# (issue 0128), the orders run_command and run_option act on, so this cannot
+# call a key dead that a run reads, or read one a run ignores. A config that
+# does not load returns quietly, as check_release does: check_config fails it.
+check_log_keys() {
+  local cmd opt n=0 dead=0 why suffix
+  local -a lines=()
+  cfg_load "$DEVBIN_DIR/config.yaml" >/dev/null 2>&1 || return 0
+  for cmd in $(cfg_list commands); do
+    if cfg_has "commands.$cmd.log"; then
+      n=$((n + 1))
+      why=""
+      case "$(command_tier "$cmd")" in
+        run | catalogue) ;;
+        devbin) why="devbin's own $cmd runs, from lib/cmd/$cmd, and seals as it seals -- declare commands.$cmd.run for a line of the project's own" ;;
+        handler | mapped) why="the project's handler runs $cmd and seals as it seals" ;;
+        *) why="$cmd has no line of its own to seal -- declare commands.$cmd.run beside it" ;;
+      esac
+      if [ -n "$why" ]; then
+        dead=$((dead + 1))
+        lines+=("commands.$cmd.log: $why")
+      fi
+    fi
+    for opt in $(cfg_list "commands.$cmd.options"); do
+      cfg_has "commands.$cmd.options.$opt.log" || continue
+      n=$((n + 1))
+      why=""
+      case "$(option_run_tier "$cmd" "$opt")" in
+        option-run) ;;
+        catalogue)
+          # Read with its status (issue 0159): a row that cannot be read is
+          # named, never taken for a row with no seal suffix.
+          if ! suffix="$(builtin_option_suffix "$cmd" "$opt")"; then
+            _fail "log: devbin's catalogue row for $cmd $opt cannot be read, so whether its log: key is read cannot be told"
+            return 0
+          fi
+          if [ -n "$suffix" ] && ! is_no_default "$suffix"; then
+            why="devbin's own $cmd $opt seals under $suffix whatever this says -- declare its run: beside it to change the seal"
+          else
+            why="devbin's own $cmd $opt runs as it ships whatever this says -- declare its run: beside it to seal a line of the project's own"
+          fi
+          ;;
+        handler | mapped) why="the project's handler runs $cmd $opt and seals as it seals" ;;
+        run) why="commands.$cmd.run runs $cmd $opt, sealed by commands.$cmd.log -- declare the option's own run: to seal it apart" ;;
+        *) why="nothing runs $cmd $opt -- declare its run:" ;;
+      esac
+      if [ -n "$why" ]; then
+        dead=$((dead + 1))
+        lines+=("commands.$cmd.options.$opt.log: $why")
+      fi
+    done
+  done
+  if [ "$n" -eq 0 ]; then
+    _pass "log: no log: key declared"
+    return 0
+  fi
+  if [ "$dead" -eq 0 ]; then
+    _pass "log: $n key(s), each where a run reads it"
+    return 0
+  fi
+  _fail "log: $dead of $n key(s) read by nothing"
+  for why in "${lines[@]}"; do
+    _detail "$why"
+  done
+  return 0
+}
+
+# check_languages -- which languages this project arms devbin's built-ins for.
+#
+# A NOTE WHEN THERE ARE NONE, NEVER A FAILURE (issue 0062). `project.languages`
+# is GATE SCOPE: what devbin offers to run here. Intent's own list in
+# intent/.config/config.json is PROJECT COMPOSITION, a different fact that is
+# not meant to match (lib/config.reference.yaml says why, ST0002 WP-04).
+# Declaring none is legitimate, and it is also exactly what a fresh install
+# looks like: install writes the block commented out, every built-in scoped by
+# language is then inactive, and until this check nothing said so. One project
+# met it. Another met it with rust in its Intent list, and
+# was told its project did not declare rust.
+#
+# IT RE-READS THE CONFIG RATHER THAN TRUSTING THE CACHE. check_config reports a
+# failed load and moves on, so an empty cache here means either "declares none"
+# or "could not read what it declares", and only the first may be said.
+check_languages() {
+  local langs
+  if ! cfg_load "$DEVBIN_DIR/config.yaml" >/dev/null 2>&1; then
+    _note "languages: not checked -- the config did not load (see config above)"
+    return 0
+  fi
+  langs="$(project_languages | tr '\n' ' ')"
+  langs="${langs% }"
+  if [ -z "$langs" ]; then
+    _note "languages: project.languages declares none -- every built-in devbin scopes by language is inactive here"
+    _detail "declare the languages to arm gates for under project.languages in bin/.devbin/config.yaml; intent/.config/config.json is a separate list and arms nothing here"
+    return 0
+  fi
+  _pass "languages: devbin arms its language-scoped built-ins for $langs (project.languages)"
+  return 0
+}
+
+# check_version -- the project's version reads (issue 0259). `version show` and
+# `version check` refuse while it does not, so a project with none hears it here
+# first, with what to do. A NOTE, not a failure: no version file is where every
+# fresh install starts, and a project may have no use for one. The reason and
+# the remedy are version_unread's, the words `version show` refuses with.
+#
+# IT RE-READS THE CONFIG, as check_languages does, and takes the file from what
+# it loaded (cfg_version_from), never from the environment: a config that does
+# not load has no project.version_from anyone read, so nothing may be said of
+# the version it names.
+check_version() {
+  local file why
+  if ! cfg_load "$DEVBIN_DIR/config.yaml" >/dev/null 2>&1; then
+    _note "version: not checked -- the config did not load (see config above)"
+    return 0
+  fi
+  file="$(cfg_version_from)"
+  if why="$(version_unread why "$file")"; then
+    _note "version: $why -- version show and version check refuse until one reads"
+    _detail "$(version_unread fix "$file")"
+    return 0
+  fi
+  _pass "version: $(read_version "$file" version-file), from $file (project.version_from)"
+  return 0
+}
+
+# check_devbin_version -- the constraint the project declared, enforced.
+#
+# IT RE-READS THE CONFIG FOR THE SAME REASON check_languages DOES, four lines
+# up, and once did not. An empty cache means either "declares no constraint"
+# or "could not read the constraint it declares", and only the first may be
+# said. This check said it unconditionally, so a project whose
+# config does not parse was told `any runtime satisfies this project` -- the
+# most permissive verdict doctor can reach -- printed directly beneath a FAIL
+# naming that same file. 0062 wrote this guard for check_languages and it never
+# reached its neighbour, which is the whole defect: a fix applied to the case
+# that was reported rather than to the hazard that was found.
+check_devbin_version() {
+  local want have unvouched
+  if ! cfg_load "$DEVBIN_DIR/config.yaml" >/dev/null 2>&1; then
+    _note "devbin_version: not checked -- the config did not load (see config above)"
+    return 0
+  fi
+  want="$(cfg_get devbin_version)"
+  have="$(devbin_runtime_version)"
+  if [ -z "$want" ]; then
+    _note "devbin_version: not declared -- any runtime satisfies this project"
+    return 0
+  fi
+  if version_satisfies "$have" "$want"; then
+    _pass "devbin_version: $have satisfies $want"
+  else
+    _fail "devbin_version: running $have, this project asks for $want"
+    # An install with no manifest runs `unknown`, and a plain upgrade refuses
+    # it: the fix is the manifest check's, below (issue 0146). So
+    # does one whose manifest records no files (issue 0159), whose header may
+    # still name a version: upgrade refuses it all the same.
+    if unvouched="$(manifest_unvouched "$PROJECT_ROOT")"; then
+      if [ "$unvouched" = empty ]; then
+        _detail "fix: see manifest below -- $(manifest_unvouched_said empty), and a plain upgrade refuses until it does"
+      else
+        _detail "fix: see manifest below -- the runtime's version is read from the manifest, and there is none"
+      fi
+    elif ! manifest_readable "$PROJECT_ROOT" 2>/dev/null; then
+      # And upgrade refuses one it cannot read (issue 0144), so it is not the fix.
+      _detail "fix: see manifest below -- the runtime's version is read from the manifest, which cannot be read"
+    else
+      _detail "fix: bin/devbin upgrade    or relax devbin_version in config.yaml"
+    fi
+  fi
+  return 0
+}
+
+# check_manifest -- every vendored file still as devbin left it.
+#
+# A FILE DEVBIN CANNOT READ FAILS HERE BY NAME, AND THE LIST GOES ON (issue
+# 0144). The checksum pass under manifest_check reported success over a file it
+# could not read, and under errexit its failure ended doctor at this check: no
+# manifest line, none of the checks after it, and no count -- issue 0120's
+# shape, with the checksum tool's own line the only word. manifest_check now
+# reports such a file as `unreadable` and returns 0, so this is one FAIL like
+# any other and every later check runs and is counted. Over a MANIFEST it
+# cannot read it returns 1, and that is a FAIL of its own, below.
+check_manifest() {
+  local states bad=0 unread=0 state rel line unvouched
+  if ! is_devbin_installed "$PROJECT_ROOT"; then
+    _note "manifest: none -- this is a devbin checkout, not an install"
+    return 0
+  fi
+  # AN INSTALL WITH NO MANIFEST IS UNCHECKED, NEVER CLEAN (issue 0146). The
+  # remedy this named, `upgrade --from <dir>`, was the damage: with no manifest
+  # every file read as new, so upgrade overwrote an edit at exit 0 and wrote a
+  # fresh manifest over it, and this check passed the next run. upgrade now
+  # refuses it, so the remedy names the flag that accepts the loss.
+  if unvouched="$(manifest_unvouched "$PROJECT_ROOT")"; then
+    # AND ONE THAT RECORDS NO FILES FAILS THE SAME WAY (issue 0159): cut to its
+    # header it passed `0 vendored files intact` and named every vendored file
+    # unowned, while upgrade overwrote an edit under it.
+    if [ "$unvouched" = empty ]; then
+      _fail "manifest: $DEVBIN_MANIFEST_REL records no files, so no vendored file can be checked"
+    else
+      _fail "manifest: $DEVBIN_MANIFEST_REL is missing, so no vendored file can be checked"
+    fi
+    _detail "whether one was edited here cannot be told, and upgrade refuses to run until there is a manifest"
+    _detail "fix: $DEVBIN_INVOKE upgrade --from <dir> --force, or <path-to-devbin>/bin/devbin install --into $PROJECT_ROOT --force"
+    _detail "     each replaces every vendored file, an edit included"
+    return 0
+  fi
+  # A MANIFEST DOCTOR CANNOT READ FAILS BY NAME, AND THE LIST GOES ON (issue
+  # 0144). It read as a manifest of no entries, and this passed `0 vendored
+  # files intact`. Nothing it records can be checked, and the unowned check
+  # needs what it records, so both end here, as for a missing one.
+  if ! states="$(manifest_check "$PROJECT_ROOT")"; then
+    _fail "manifest: $DEVBIN_MANIFEST_REL cannot be read (named above), so no vendored file can be checked"
+    _detail "make it readable, eg chmod u+r $DEVBIN_MANIFEST_REL"
+    return 0
+  fi
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    state="${line%%	*}"
+    rel="${line#*	}"
+    case "$state" in
+      modified)
+        [ "$bad" -eq 0 ] && _fail "manifest: vendored files have been edited in place"
+        bad=$((bad + 1))
+        # A FILE CHECKED OUT CRLF READS AS EDITED, so its cause is said beside
+        # it, and check_line_endings names it with the remedy (ST0008). A
+        # read error here goes unsaid: a file devbin cannot read is
+        # `unreadable`, not `modified`, failed below, and check_line_endings
+        # notes it as unchecked.
+        if [ -n "$(cr_files "$PROJECT_ROOT" "$rel" 2>/dev/null)" ]; then
+          _detail "edited:  $rel (it carries CR bytes: CRLF line endings, see line endings below)"
+        else
+          _detail "edited:  $rel"
+        fi
+        ;;
+      missing)
+        [ "$bad" -eq 0 ] && _fail "manifest: vendored files are missing"
+        bad=$((bad + 1))
+        _detail "missing: $rel"
+        ;;
+      unreadable)
+        [ "$bad" -eq 0 ] && _fail "manifest: vendored files cannot be read"
+        bad=$((bad + 1))
+        unread=$((unread + 1))
+        _detail "unreadable: $rel"
+        ;;
+    esac
+  done <<EOF
+$states
+EOF
+  if [ "$bad" -eq 0 ]; then
+    _pass "manifest: $(nonempty_lines "$states") vendored files intact"
+  else
+    # Each remedy only where it is true: an unreadable file was not edited, and
+    # upgrade --force does not reach it -- upgrade refuses to run while one is.
+    if [ "$bad" -gt "$unread" ]; then
+      _detail "an edit here is lost on the next upgrade --force; move it into cmd/ instead"
+    fi
+    if [ "$unread" -gt 0 ]; then
+      _detail "devbin can neither check nor upgrade a file it cannot read: make each readable, eg chmod u+r <file>"
+    fi
+  fi
+  _check_unowned "$states"
+  return 0
+}
+
+# _check_unowned <states> -- files sitting under the vendored area that devbin
+# does not own.
+#
+# "Replaced wholesale" is implemented per enumerated file, so a file hand-dropped
+# into bin/.devbin/lib/ belongs to nobody: upgrade never removes it (it is not in
+# the source list), the manifest never records it, and doctor reported "N
+# vendored files intact" with an unlisted one sitting beside them. It lives on
+# devbin's side of the seam, where the project has no reason to look, forever.
+#
+# A NOTE, not a failure: nothing is broken, and a project that put something
+# there may have meant to. What was wrong was that nothing ever said so.
+_check_unowned() {
+  local states="$1" f rel owned files unowned=0
+  [ -d "$DEVBIN_LIB" ] || return 0
+  # WHAT find CANNOT LIST IS A FAILURE, SAID (issue 0127). This read
+  # `$(find "$DEVBIN_LIB" -type f 2>/dev/null | sort)` inside the heredoc
+  # below, so a directory doctor could not read was a directory with nothing
+  # unowned in it, reported by saying nothing. Read whole first, in an if,
+  # because under errexit a bare failed assignment would end doctor instead
+  # (issue 0120's class); find's own error stays on stderr to name the path.
+  if ! files="$(find_walk "$DEVBIN_LIB" -type f -print)"; then
+    _fail "unowned: could not list all of bin/.devbin/lib (the error above names it), so files devbin does not own there are unchecked"
+    return 0
+  fi
+  # The owned set, extracted ONCE, and then tested WITHOUT a pipe.
+  #
+  # This was `printf '%s\n' "$states" | grep -q "<TAB>$rel$" && continue`, and
+  # under `set -o pipefail` that is unsound: `grep -q` exits the instant it
+  # matches, `printf` takes SIGPIPE on the write it has not finished, and
+  # pipefail promotes the writer's 141 to the status of the whole pipeline. The
+  # `&&` then does not fire, and a file that IS in the manifest gets reported as
+  # unowned. A MATCH is what breaks it -- the miss path, where grep reads to EOF,
+  # is the one that always worked.
+  #
+  # Nothing about it is deterministic: it turns on whether grep exits before
+  # printf's write lands, so it passed on Ubuntu and on most macOS runs and went
+  # red on one (a CI run reported `lib/cmd/install` unowned on a clean install
+  # with all 28 files present and intact). A green here never meant the
+  # code was right.
+  #
+  # `cut` is safe in the same position for the reason grep was not: it reads to
+  # EOF, so there is no early exit to race. Same spelling as manifest_check.
+  owned="$(printf '%s\n' "$states" | cut -f2)"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    rel="bin/.devbin/lib/${f#"$DEVBIN_LIB"/}"
+    list_contains "$owned" "$rel" && continue
+    [ "$unowned" -eq 0 ] && _note "unowned files under bin/.devbin/lib -- devbin neither tracks nor replaces these"
+    unowned=$((unowned + 1))
+    _detail "$rel"
+  done <<EOF
+$(printf '%s\n' "$files" | LC_ALL=C sort)
+EOF
+  [ "$unowned" -gt 0 ] && _detail "delete them, or move them to bin/.devbin/cmd/ where they are yours"
+  return 0
+}
+
+# check_line_endings -- bin/devbin and every file under bin/.devbin/ held to LF
+# by the repository, and none carrying CR bytes already (ST0008).
+#
+# ASKED OF GIT, NOT READ OFF .gitattributes. `git check-attr eol` answers as
+# git itself will at the next checkout: devbin's block, a rule after it that
+# undoes it, and a .gitattributes nearer the file all count, and a parse of one
+# file would see only the first.
+#
+# A CR BYTE ALREADY THERE is the failure the rule prevents, and it surfaces
+# somewhere obscure: a script whose first line reads `bash\r` does not run,
+# and a vendored one reads as edited in place. So it is named here with its
+# cause. A binary is passed over: a CR byte in one is data.
+check_line_endings() {
+  local root="$PROJECT_ROOT" files="" f out line val n=0 cr
+  local -a rels=() readable=() unread=() loose=()
+  if [ -d "$root/bin/.devbin" ]; then
+    if ! files="$(find_walk "$root/bin/.devbin" -type f -print)"; then
+      _fail "line endings: could not list all of bin/.devbin (the error above names it), so its line endings are unchecked"
+      return 0
+    fi
+  fi
+  [ ! -e "$root/bin/devbin" ] || rels+=(bin/devbin)
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    rels+=("bin/.devbin/${f#"$root/bin/.devbin"/}")
+  done <<EOF
+$(printf '%s\n' "$files" | LC_ALL=C sort)
+EOF
+  if [ "${#rels[@]}" -eq 0 ]; then
+    _note "line endings: no bin/devbin and nothing under bin/.devbin, so nothing to check"
+    return 0
+  fi
+
+  # A FILE DEVBIN CANNOT READ IS THE MANIFEST'S TO FAIL, NOT THIS CHECK'S. The
+  # manifest check owns "cannot read" for a vendored file and names its remedy,
+  # and config's own check fails an unreadable config.yaml; a second failure
+  # here over the same file would count one fault twice. So the CR scan reads
+  # only what can be read, and what it passes over is said, as a note.
+  for f in "${rels[@]}"; do
+    if [ -r "$root/$f" ]; then readable+=("$f"); else unread+=("$f"); fi
+  done
+  if [ "${#unread[@]}" -gt 0 ]; then
+    _note "line endings: ${#unread[@]} file(s) cannot be read, so whether they carry CR bytes is unchecked (the rows above fail them)"
+    for f in "${unread[@]}"; do
+      _detail "unread:  $f"
+    done
+  fi
+  if ! cr="$(cr_files "$root" ${readable[@]+"${readable[@]}"})"; then
+    _fail "line endings: could not read every file to look for CR bytes (the error above names it)"
+  elif [ -n "$cr" ]; then
+    _fail "line endings: $(nonempty_lines "$cr") file(s) carry CR bytes -- CRLF line endings, not an edit"
+    while IFS= read -r f; do
+      [ -z "$f" ] || _detail "CRLF:    $f"
+    done <<EOF
+$cr
+EOF
+    _detail "a script whose first line reads bash\\r does not run, and a vendored one also reads as edited in place"
+    _detail "fix: convert each to LF, eg with dos2unix; $DEVBIN_INVOKE upgrade --force replaces a vendored one from the source, an edit there included"
+  fi
+
+  if ! out="$(git_readonly -C "$root" check-attr eol -- "${rels[@]}" 2>/dev/null)"; then
+    if git_repo_absent "$root"; then
+      _note "line endings: not a git checkout, so no git converts them and no .gitattributes rule is checked"
+    else
+      _fail "line endings: git could not say which line endings it holds these files to: $(git_failure_line "$root" check-attr eol -- bin/devbin)"
+    fi
+    return 0
+  fi
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    n=$((n + 1))
+    val="${line##*: }"
+    [ "$val" = lf ] || loose+=("${line%: eol: *} (eol: $val)")
+  done <<EOF
+$out
+EOF
+  if [ "$n" -ne "${#rels[@]}" ]; then
+    _fail "line endings: git answered for $n of ${#rels[@]} files, so which line endings the rest check out with is unknown"
+    return 0
+  fi
+  if [ "${#loose[@]}" -eq 0 ]; then
+    _pass "line endings: .gitattributes holds bin/devbin and everything under bin/.devbin/ to LF ($n files)"
+    return 0
+  fi
+  _fail "line endings: ${#loose[@]} of $n files are not held to LF by .gitattributes, so a checkout on Windows can give them CRLF"
+  for f in "${loose[@]}"; do
+    _detail "not LF:  $f"
+  done
+  if is_devbin_installed "$root"; then
+    _detail "fix: $DEVBIN_INVOKE upgrade writes devbin's line-ending block into .gitattributes; a rule after it, or a .gitattributes nearer the file, can still undo it"
+  else
+    _detail "fix: hold them to LF in .gitattributes, eg with the line: * text=auto eol=lf"
+  fi
+  return 0
+}
+
+# check_commands -- everything help offers actually has something behind it.
+#
+# The failure this catches is the one nobody notices: a command that lists
+# cleanly, resolves cleanly, and exits 3 when anyone runs it.
+check_commands() {
+  local cmd count=0 dead=""
+  while IFS= read -r cmd; do
+    [ -n "$cmd" ] || continue
+    count=$((count + 1))
+    _command_runnable "$cmd" || dead="$dead $cmd"
+  done <<EOF
+$(known_commands)
+EOF
+  if [ "$count" -eq 0 ]; then
+    _fail "commands: this project offers none at all"
+    _detail "declare one under commands: in config.yaml, or drop a handler in bin/.devbin/cmd/"
+    return 0
+  fi
+  _pass "commands: $count offered, all resolve"
+  if [ -n "$dead" ]; then
+    _note "offered with nothing to run:$dead"
+    # EACH NAME GETS ITS OWN REMEDY, in unrunnable_why's words, which are the
+    # refusal's and `help --why`'s (issue 0128). One generic remedy for the list
+    # said "declare a run: or add a handler" to a built-in whose devbin handler
+    # is missing from the install (0117), where the right advice is to find out
+    # what else is missing. Only a built-in can be listed here: a command devbin
+    # does not ship is active only with something behind it.
+    for cmd in $dead; do
+      _detail "$cmd: $(unrunnable_why "$cmd")"
+    done
+  fi
+  return 0
+}
+
+# _command_runnable <cmd> -- would this do anything if someone typed it?
+#
+# command_tier's answer, the order run_command acts on (issue 0128). Asking
+# differently here would let doctor bless a command the dispatcher refuses, and
+# this function spelled the five sources out itself until 0128.
+_command_runnable() {
+  local tier
+  tier="$(command_tier "$1")" || die "devbin defect: command_tier gave no answer for '$1'"
+  [ "$tier" != none ]
+}
+
+# check_shadowing -- project names standing where devbin ships its own (0024).
+#
+# OVERRIDING IS LEGAL AND LOAD-BEARING, and this check does not argue with it.
+# The resolution order exists so a project can put its own thing at any name
+# devbin ships, and the framework would be worse without that. What was missing
+# is anyone SAYING SO -- the substitution is invisible from the command line,
+# and both things answer to the same word.
+#
+# TWO MEASURED INSTANCES IN ONE DAY, IN OPPOSITE DIRECTIONS, which is what makes
+# this a class rather than an anecdote:
+#
+#   0018  A project handler stood at a BUILT-IN name. Devbin's own cmd/check
+#         displaced the built-in option set for eighteen days, so `check critic`
+#         swept a corpus in one tree and scanned staged files in every other.
+#         Both were honest; the seals were the only thing that knew.
+#   0024  A BUILT-IN arrived at a name a project already had. `devbin vendor`
+#         shipped into installs carrying their own `vendor`, whose handler
+#         answers tree-vs-MANIFEST where the built-in answers tree-vs-SOURCE --
+#         and a sweep nearly banked the wrong one as a convergence check.
+#
+# Neither direction is detectable by running the command: the output looks
+# plausible either way. It is detectable HERE, by comparing two lists devbin
+# already keeps.
+#
+# A SHADOW IS A NOTE, NEVER A FAILURE. A doctor that went red on a documented
+# feature would be red on every project using it, and a check nobody can
+# satisfy is a check nobody reads. A catalogue devbin could not read is not a
+# shadow, and that fails (issue 0159).
+#
+# It reports its count even at ZERO, because a row that appears only on a hit is
+# indistinguishable from a row that never ran -- which is the defect class this
+# whole command is built around.
+check_shadowing() {
+  local hits n h
+  # A READER THAT FAILED IS NOT A CATALOGUE WITH NO SHADOWS (issue 0159): the
+  # status of each row's read was thrown away, so a row devbin could not read
+  # dropped its shadow and this passed "no project name stands where ...".
+  if ! hits="$(_shadow_hits)"; then
+    _fail "shadowing: devbin's own catalogue could not be read (above), so whether a project name stands where devbin ships its own cannot be told"
+    return 0
+  fi
+  n="$(nonempty_lines "$hits")"
+  if [ "$n" -eq 0 ]; then
+    _pass "shadowing: no project name stands where devbin ships its own"
+    return 0
+  fi
+  _pass "shadowing: $n project name(s) stand where devbin ships its own"
+  _note "SUPPORTED overrides: the project's own answers first, and devbin's is NOT reached"
+  while IFS= read -r h; do
+    [ -n "$h" ] || continue
+    _detail "$h shadows the built-in"
+  done <<EOF
+$hits
+EOF
+  return 0
+}
+
+# _shadow_hits -- each shadowed name, spelled the way a reader would type it:
+# `<command>` for a whole command, `<command> <option>` for one option of one.
+#
+# Both levels, because 0018 was both at once -- a handler at `check` AND config
+# `run:` lines on three of its options -- and reporting only the command would
+# have named the smaller half of it.
+_shadow_hits() {
+  local cmd opt run
+  while IFS= read -r cmd; do
+    [ -n "$cmd" ] || continue
+    # A NAME devbin ships with nothing behind it is filled, not shadowed (issue
+    # 0136): `commands.precommit.run` was reported as shadowing the built-in
+    # when devbin has no line, no handler and no option for precommit to lose.
+    if project_owns_command "$cmd" && _ships_behind_name "$cmd"; then
+      printf '%s\n' "$cmd"
+    fi
+    # Only options devbin actually IMPLEMENTS can be shadowed. A catalogue row
+    # carrying a command line is a DEFAULT that config is invited to replace --
+    # that is tier 2 working as designed and is not a substitution of anything.
+    while IFS= read -r opt; do
+      [ -n "$opt" ] || continue
+      if ! run="$(builtin_option_run "$cmd" "$opt")"; then
+        warn "cannot read devbin's catalogue row for $cmd $opt"
+        return 1
+      fi
+      [ "$run" = "@builtin" ] || continue
+      if cfg_has "commands.$cmd.options.$opt.run"; then
+        printf '%s %s\n' "$cmd" "$opt"
+      fi
+    done <<OPTS
+$(builtin_options_for "$cmd")
+OPTS
+  done <<CMDS
+$(builtin_commands)
+CMDS
+  return 0
+}
+
+# _ships_behind_name <command> -- true when devbin ships something a project
+# taking the command over would displace: a command line, a handler of its own,
+# or an option. False for a name-only built-in (tier 4) such as precommit.
+_ships_behind_name() {
+  builtin_has_default_run "$1" && return 0
+  [ -x "$DEVBIN_LIB/cmd/$1" ] && return 0
+  [ -n "$(builtin_options_for "$1")" ]
+}
+
+# check_handlers -- files in cmd/ that will never be reached.
+#
+# Each orphan shape is silent. A handler without its executable bit is
+# skipped by known_commands, so the command simply does not exist and nothing
+# says why. A `<name>.d/` with no `<name>` beside it holds sub-commands whose
+# parent never resolves, so the whole subtree is unreachable (sub-dispatch is
+# recursive).
+check_handlers() {
+  local dir="$DEVBIN_DIR/cmd" f base orphans=0
+  if [ ! -d "$dir" ]; then
+    _note "handlers: no bin/.devbin/cmd directory"
+    return 0
+  fi
+  for f in "$dir"/*; do
+    [ -e "$f" ] || continue
+    base="${f##*/}"
+    case "$base" in *.yaml | *.md) continue ;; esac
+    if [ -d "$f" ]; then
+      case "$base" in
+        # doctor.d is doctor's own: the project checks it runs (0093).
+        doctor.d) ;;
+        *.d)
+          if ! is_handler "$dir/${base%.d}"; then
+            [ "$orphans" -eq 0 ] && _fail "handlers: unreachable files in cmd/"
+            orphans=$((orphans + 1))
+            _detail "$base/ has no executable cmd/${base%.d} beside it"
+          fi
+          ;;
+      esac
+      continue
+    fi
+    if [ ! -x "$f" ]; then
+      [ "$orphans" -eq 0 ] && _fail "handlers: unreachable files in cmd/"
+      orphans=$((orphans + 1))
+      _detail "cmd/$base is not executable -- fix: chmod +x bin/.devbin/cmd/$base"
+    fi
+  done
+  [ "$orphans" -eq 0 ] && _pass "handlers: every file in cmd/ is reachable"
+  return 0
+}
+
+# check_symlinks -- the launcher, and the retired aliases that may still shadow
+# a project's own binary.
+#
+# THIS CHECK IS INVERTED FROM WHAT IT WAS. It used to require `bin/<project>`
+# and `bin/<alias>` as symlinks to devbin, and to tell you to create them.
+# They are retired: `bin/devbin` is the invocation
+# everywhere, because the old convention collided with the binaries these
+# projects BUILD -- a project named `demo` ships a `demo`.
+#
+# So a surviving alias is now a NOTE rather than a requirement, and the reason
+# it is worth reporting at all is that it may be actively harmful: `bin/demo`
+# pointing at devbin is a file standing exactly where the project's own binary
+# wants to live.
+#
+# A REAL FILE AT THAT NAME IS SILENT. Under the old rule that was "not a symlink"
+# and got a note; under the new one it is the expected and correct state, and a
+# checker that reports the correct state as a finding is how a checker stops
+# being read.
+check_symlinks() {
+  local pname palias path pointers other
+
+  if [ -x "$PROJECT_ROOT/bin/devbin" ]; then
+    _pass "launcher: bin/devbin"
+  else
+    _fail "launcher: bin/devbin is missing or not executable"
+    _detail "this is the dispatcher; reinstall with: devbin install --into $PROJECT_ROOT"
+  fi
+
+  # THE TWO NAMES ARE DIFFERENT THINGS AND THIS LOOP USED TO CONFLATE THEM.
+  # It iterated `project.name project.alias` together and called both retired,
+  # so it told every project with a shortcut that its RATIFIED one was
+  # superseded. The convention: bin/{project} is retired because it shadows the
+  # binary the project BUILDS; a 2-3 char shortcut pointing DIRECT at bin/devbin
+  # is a permitted per-project choice.
+  pname="$(cfg_get project.name)"
+  palias="$(cfg_get project.alias)"
+
+  # THE PROJECT-NAMED LINK -- retired, and possibly standing where the project's
+  # own binary wants to live.
+  if [ -n "$pname" ] && [ "$pname" != devbin ]; then
+    path="$PROJECT_ROOT/bin/$pname"
+    # Only a symlink TO devbin is ours to comment on. A real file of that name
+    # is the project's own binary and is none of devbin's business.
+    if [ -L "$path" ] && [ "$(readlink "$path")" = devbin ]; then
+      _note "launcher: bin/$pname -> devbin is a retired alias, superseded by bin/devbin"
+      # NO PASTEABLE `rm` HERE, AND THAT IS THE WHOLE POINT OF THIS BRANCH.
+      #
+      # It offered one for about an hour and a reader said plainly it would have
+      # run it. A tool naming a SPECIFIC remedy is read as advice regardless of
+      # its severity label: the reader's eye lands on a command it can paste and
+      # the word "note" does not survive the trip.
+      #
+      # Whether the alias goes is a PROJECT decision and devbin is not entitled
+      # to it -- in several projects it is named by CI.
+      _detail "whether to remove it is this project's call; devbin no longer creates it"
+      # WHAT DOCTOR CAN DO THAT A CAUTION CANNOT: say who would break. It is
+      # standing in bin/ and can simply look, so the risk is COMPUTED for this
+      # tree rather than described in general.
+      pointers=""
+      for other in "$PROJECT_ROOT"/bin/*; do
+        [ -L "$other" ] || continue
+        [ "$(readlink "$other")" = "$pname" ] && pointers="$pointers $(basename "$other")"
+      done
+      if [ -n "$pointers" ]; then
+        _detail "REMOVING IT WOULD ALSO BREAK:$pointers -- $(printf '%s' "$pointers" | wc -w | tr -d ' ') link(s) point AT this one"
+      fi
+    fi
+  fi
+
+  # THE SHORTCUT -- permitted, and the only thing worth saying about it is
+  # WHERE IT POINTS. Direct at devbin is correct and passes. Chained through the
+  # project-named link is the one alias shape the retirement can break, which is
+  # what killed one project's bin/dm -> demo -> devbin; it was the only such
+  # link an audit found, and nothing resolving a single hop could see it.
+  if [ -n "$palias" ] && [ "$palias" != devbin ] && [ "$palias" != "$pname" ]; then
+    path="$PROJECT_ROOT/bin/$palias"
+    if [ -L "$path" ]; then
+      case "$(readlink "$path")" in
+        devbin)
+          _pass "shortcut: bin/$palias -> devbin"
+          ;;
+        "$pname")
+          _note "shortcut: bin/$palias is chained through bin/$pname, which is retired"
+          # A PASTEABLE COMMAND IS RIGHT HERE AND WRONG ABOVE, AND THE
+          # DIFFERENCE IS WHETHER IT DESTROYS ANYTHING. This one repoints and is
+          # idempotent; the branch above deletes and is the project's call.
+          _detail "it dies when that link goes -- repoint it direct: ln -sfn devbin bin/$palias"
+          ;;
+      esac
+    fi
+  fi
+  return 0
+}
+
+# check_source_currency -- is this project level with the devbin it came from?
+#
+# A NOTE, NEVER A FAILURE, IN EVERY STATE. Being behind the source is a
+# normal condition -- it is what `upgrade` is for -- and a project on an older
+# runtime is not broken. Failing here would make `doctor` red on the ordinary
+# case, which is the argument that killed the `> 1 declared test target` rule.
+#
+# WHAT THIS ADDS OVER THE UPDATE NOTICE (ST0005, AC-2.4). The notice prints or
+# stays quiet, and quiet covers BOTH "level" and "could not tell". That is right
+# for something that must never nag, and useless as an answer. Here every state
+# is kept apart, because a check that cannot reach the source and says nothing
+# gets read as currency it never established. Absent is not clean.
+check_source_currency() {
+  local state word rec cur why root by
+  is_devbin_installed "$PROJECT_ROOT" || return 0
+
+  state="$(devbin_source_state "$PROJECT_ROOT")"
+  IFS=' ' read -r word rec cur why <<<"$state"
+  case "$word" in
+    level)
+      _pass "source: level with the devbin it was vendored from"
+      ;;
+    moved)
+      # NOT AN UPDATE, AND NOT LEVEL (issue 0224). The source's commit moved on
+      # and no vendored byte did, so there is nothing to upgrade, and the
+      # difference is still said: the commits are not the same.
+      _pass "source: every vendored file is level with the devbin it came from"
+      _detail "its commit has moved on outside them: vendored ${rec:0:12}, source now ${cur:0:12}"
+      ;;
+    behind)
+      _note "source: the devbin this project came from has moved on"
+      _detail "vendored ${rec:0:12}, source now ${cur:0:12}"
+      _detail "run: $DEVBIN_INVOKE upgrade"
+      ;;
+    ahead)
+      # NEVER THE UPGRADE LINE (issue 0079). Any difference read as `behind`, so
+      # a project AHEAD of a rewound source was told to run the upgrade that
+      # reverts it.
+      _note "source: the devbin this project came from is BEHIND this project"
+      _detail "vendored ${rec:0:12}, source now ${cur:0:12}"
+      _detail "run: $DEVBIN_INVOKE vendor -- it says which vendored files an upgrade from it would change"
+      ;;
+    differs)
+      _note "source: differs from what this project vendored, and is not known to be newer"
+      _detail "$why"
+      _detail "vendored ${rec:0:12}, source now ${cur:0:12}"
+      _detail "run: $DEVBIN_INVOKE vendor"
+      ;;
+    *)
+      # NOT SILENCE, AND NOT A PASS. The whole point of keeping `unknown` apart.
+      _note "source: CANNOT TELL whether this project is current"
+      _detail "${state#* }"
+      _detail "this is not a clean bill -- nothing was established either way"
+      ;;
+  esac
+  # WHICH INSTALL, AND WHAT CHOSE IT (issues 0195, 0213). DEVBIN_INSTALL_PREFIX,
+  # the link `devbin use` writes and, when neither names one, Homebrew's
+  # opt/devbin can each name the tree every kind of recorded source is upgraded
+  # from, and a project read against the wrong one reads level or behind
+  # against it all the same. The tree is named by its own line, so which of
+  # dev, opt and brew the switch chose is on the row.
+  #
+  # THE LINE ALONE, AS THAT TREE'S --version PRINTS IT (T4; issue
+  # 0246): on a line of its own, with nothing added, so a reader compares it
+  # byte for byte. What chose the install, a path among its answers, is the
+  # detail row beneath it.
+  if [ -n "$(manifest_field "$PROJECT_ROOT" source 2>/dev/null || true)" ] &&
+    root="$(machine_install_root 2>/dev/null)"; then
+    by="$(machine_install_by)"
+    [ "$(machine_install_chooser)" != brew ] || by="$by, since no DEVBIN_INSTALL_PREFIX or link names one"
+    devbin_tree_line "$root"
+    _detail "install: the line above, named by $by"
+  fi
+  return 0
+}
+
+# check_tree -- in devbin's own dev tree, whether the tree line (T4 of
+# docs/dev-opt-brew.md) that doctor printed first names a commit. It fails when
+# git cannot read the checkout, since the line then carries `unknown` for the
+# commit and names no bytes. The row never repeats the line (T4,
+# issue 0246): the line stands alone, as `--version` prints it. A project is not
+# one of devbin's trees: its own install is named under source.
+check_tree() {
+  [ -n "$TREE_LINE" ] || return 0
+  case "$(tree_line_head "$TREE_LINE")" in
+    *"(dev, unknown)") _fail "tree: git cannot read this checkout, so the version line above names no commit" ;;
+    *) _pass "tree: the version line above names this checkout's commit" ;;
+  esac
+  return 0
+}
+
+# check_switch -- the machine's switch among dev, opt and brew is sound
+# (docs/dev-opt-brew.md, T3 to T5; issue 0213).
+#
+# FAILS when the link is shadowed on PATH (devbin_link_shadow), and with no
+# link when the first devbin on PATH is not Homebrew's keg (issue 0273), when
+# the link cannot be followed to a devbin tree, and when the opt install the
+# switch chose is in the manifest form written before the contract, naming each
+# remedy; a keg in that form is a NOTE (below). A machine pointer still on disk
+# is a NOTE: nothing reads it, so it is named as retired with the step that
+# replaces it, and removed by hand.
+check_switch() {
+  local why state root p failed=""
+  why="$(devbin_link_shadow)"
+  if [ -n "$why" ]; then
+    _fail "switch: $why"
+    failed=yes
+  fi
+  state="$(machine_link_state)"
+  if [ "${state%% *}" = bad ]; then
+    _fail "switch: ${state#bad }"
+    failed=yes
+  fi
+  # AN OLD KEG IS A NOTE, AN OLD OPT INSTALL A FAILURE (T3). An opt install is
+  # fixed now, by `install --force` in the checkout. A keg is fixed only by
+  # `brew upgrade devbin` to a release that writes the new form, and a failure
+  # would stop that release's own cut, whose gates run doctor on the machine
+  # still holding the old keg.
+  if root="$(machine_install_root 2>/dev/null)" && devbin_install_old "$root"; then
+    if [ "$(devbin_tree "$root")" = brew ]; then
+      _note "switch: the install at $root has the manifest form written before devbin's tree line"
+      _detail "run: brew upgrade devbin, once a release that writes the new form is out"
+    else
+      _fail "switch: the install at $root has the manifest form written before devbin's tree line -- run: bin/devbin install --force in the devbin checkout"
+      failed=yes
+    fi
+  fi
+  if p="$(devbin_home_pointer 2>/dev/null)" && { [ -e "$p" ] || [ -L "$p" ]; }; then
+    _note "switch: $p is the retired machine pointer, and nothing reads it"
+    # use brew alone to every reader, dev or opt only from a dev or opt tree
+    # (issue 0250).
+    _detail "the link devbin use writes is the record now: run devbin use brew$(devbin_checkout_clause "$PROJECT_ROOT"), then remove $p"
+  fi
+  [ -z "$failed" ] || return 0
+  # NO LINK IS BREW ONLY WHERE HOMEBREW HAS A DEVBIN (issue 0250). With none,
+  # the row said "no link, so brew" while the source row in the same run said
+  # this machine names no install, so it notes what is missing, why in
+  # brew_unplaced_why's words, and the remedy for that cause. While
+  # DEVBIN_INSTALL_PREFIX is set it names the install instead (T9): nothing is
+  # missing, so no Homebrew remedy is given.
+  case "${state%% *}" in
+    at) _pass "switch: the link names ${state#at }" ;;
+    *)
+      if devbin_brew_root >/dev/null; then
+        _pass "switch: no link, so brew"
+      elif [ "$(machine_install_chooser)" = prefix ]; then
+        _note "switch: no link, and $(brew_none_why); DEVBIN_INSTALL_PREFIX names $(home_expand "$DEVBIN_INSTALL_PREFIX") as this machine's install"
+      else
+        _note "switch: no link, and $(brew_none_why)"
+        _detail "$(brew_unplaced_fix "$PROJECT_ROOT")"
+      fi
+      ;;
+  esac
+  _switch_left_off_brew "$state"
+  return 0
+}
+
+# _switch_left_off_brew <link state> -- a NOTE when the link names dev or opt
+# and Homebrew's devbin is at that tree's version or past it (issue 0228).
+#
+# THE SWITCH RESTS AT BREW (T5): the maintainer moves it to dev or opt only
+# while working on devbin, and back once the work is released and `brew
+# upgrade devbin` has taken it. A switch left behind breaks nothing, so this is
+# a note, never a failure: it names what was forgotten at the next doctor.
+# While the work is still going on, dev's VERSION is the release brew already
+# has, so the note says to go back once the work is released, not now. A
+# version that is not X.Y.Z, or that cannot be read (a VERSION or manifest
+# missing: the tree and manifest checks above report those), compares as
+# nothing, and says nothing.
+_switch_left_off_brew() {
+  local root tree brew have want
+  case "$1" in
+    "at "*) root="${1#at }" ;;
+    *) return 0 ;;
+  esac
+  tree="$(devbin_tree "$root")"
+  case "$tree" in
+    dev | opt) ;;
+    *) return 0 ;;
+  esac
+  brew="$(devbin_brew_root)" || return 0
+  [ "$(devbin_tree "$brew")" = brew ] || return 0
+  want="$(devbin_version_of "$root" 2>/dev/null)" || return 0
+  have="$(devbin_version_of "$brew" 2>/dev/null)" || return 0
+  is_semver "$want" && is_semver "$have" || return 0
+  ! semver_gt "$want" "$have" || return 0
+  _note "switch: on $tree, and Homebrew's devbin is $have, at or past $tree's $want -- the switch rests at brew"
+  _detail "once the work on $tree is released: brew upgrade devbin, then devbin use brew"
+}
+
+# check_bash -- the floor, asserted where a human reads it.
+#
+# Issue 0022 dropped bash 3.2 support: devbin REQUIRES bash >= 5, and
+# the dispatcher refuses older before doctor can run -- so a doctor reaching
+# this line is already on a compliant bash. The row still earns its place: it
+# names WHICH bash, and it is the check that goes red if the dispatcher guard
+# is ever removed while this one survives it.
+check_bash() {
+  if bash_meets_floor "${BASH_VERSINFO[0]:-0}"; then
+    _pass "bash: ${BASH_VERSION:-unknown} at ${BASH:-unknown} (floor >= $_DEVBIN_BASH_FLOOR)"
+  else
+    _fail "bash: ${BASH_VERSION:-unknown} is below the >= $_DEVBIN_BASH_FLOOR floor -- brew install bash, or apt-get install bash"
+  fi
+  return 0
+}
+
+# check_cache -- for a project that declares a build: block, the artefact
+# registry's root the cache command resolves (cache_root_resolved), the default
+# marked, and whether it can be written (ST0011 WP-16), so a wrong value is read
+# before a cut rather than in one. A NOTE, NEVER A FAILURE, when it cannot: an
+# unusable registry costs a build and nothing else. Then the block's input
+# paths (check_cache_inputs). No row without a build: block, since nothing
+# reads the root then.
+check_cache() {
+  local line root how why
+  [ -n "$(cfg_list build)" ] || return 0
+  if ! line="$(cache_root_resolved)"; then
+    _note "cache: no root -- $line, so every build runs and none is recorded"
+  else
+    root="${line%%$'\t'*}"
+    how="${line#*$'\t'}"
+    if why="$(cache_root_problem "$root")"; then
+      _note "cache: the root $root ($how) $why, so every build runs and none is recorded -- set DEVBIN_CACHE_HOME to an absolute directory this user can write"
+    elif [ -d "$root" ]; then
+      _pass "cache: root $root ($how), writable"
+    else
+      _pass "cache: root $root ($how), made at the first put"
+    fi
+  fi
+  check_cache_inputs
+  return 0
+}
+
+# check_macos_cache -- where the macOS stage builds its app (the built-in macos
+# declared, cfg_macos_declared, with macos.build), whether that app is one of
+# the build: block's artefacts, which the stage pulls from the cache and puts
+# there, by the one answer app-sign and a cut read too (cfg_macos_artefact;
+# ST0011 WP-06): a pass naming it, or a NOTE that the stage builds uncached,
+# so an adoption whose artefact's path missed macos.app's sees it before a
+# cut. Two entries naming the app are config validation's to refuse, and a
+# stage that builds no app has nothing to cache, so this says nothing of them.
+check_macos_cache() {
+  local art s=0
+  cfg_macos_declared || return 0
+  art="$(cfg_macos_artefact)" || s=$?
+  case "$s" in
+    0) _pass "macos: the stage pulls and puts its app as the cache's build.artefacts.$art" ;;
+    1) _note "macos: the stage builds its app uncached -- no build.artefacts entry has macos.app's path ($(cfg_macos_get app))" ;;
+  esac
+  return 0
+}
+
+# check_cache_inputs -- each input path the build: block declares
+# (cfg_build_input_paths, the one reader of them, each once), held at HEAD: a
+# path HEAD does not hold has no object, so every key that reads it is refused
+# and the build runs uncached. A FAILURE, since the declaration is what is
+# wrong; a note where there is no commit to read the paths at yet. An empty path
+# is config validation's to refuse, and is not asked here.
+check_cache_inputs() {
+  local p
+  local -a declared=() missing=()
+  # shellcheck disable=SC2119  # the bare call IS the point: every declared path.
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    declared+=("$p")
+  done <<<"$(cfg_build_input_paths)"
+  [ "${#declared[@]}" -gt 0 ] || return 0
+  if ! git_readonly -C "$PROJECT_ROOT" rev-parse -q --verify 'HEAD^{commit}' >/dev/null 2>&1; then
+    _note "cache: no commit to read the input paths at, so no artefact has a key until there is one"
+    return 0
+  fi
+  for p in "${declared[@]}"; do
+    git_readonly -C "$PROJECT_ROOT" rev-parse -q --verify "HEAD:$p" >/dev/null 2>&1 || missing+=("$p")
+  done
+  if [ "${#missing[@]}" -eq 0 ]; then
+    _pass "cache: every declared input path is held at HEAD"
+    return 0
+  fi
+  _fail "cache: ${#missing[@]} declared input path(s) not held at HEAD, so every key that reads one is refused and the build runs uncached"
+  for p in "${missing[@]}"; do
+    _detail "not at HEAD: $p"
+  done
+  _detail "fix: commit the path, or correct build.inputs or the artefact's own inputs in bin/.devbin/config.yaml"
+}
+
+# check_location <wsl> -- under WSL (<wsl> 1), whether the project sits on a
+# Windows drive (ST0008). Off WSL there is nothing to say, so no row. main
+# asks is_wsl before the header, so a DEVBIN_WSL it refuses stops doctor
+# before any row rather than partway down the list.
+#
+# A NOTE, NEVER A FAILURE. A checkout under /mnt/<letter> works, slowly, so a
+# refusal would stop a developer mid-task over something that still runs; the
+# note names the cause and the fix instead. The root and the mount root are
+# both read physically, so a link to either is read as what it reaches.
+#
+# DEVBIN_WSL_MOUNT_ROOT names the automount root where /etc/wsl.conf moved it
+# from /mnt; nothing reads wsl.conf for it.
+check_location() {
+  local root mount drive
+  [ "$1" = 1 ] || return 0
+  physical_dir "$PROJECT_ROOT" root || root="$PROJECT_ROOT"
+  mount="${DEVBIN_WSL_MOUNT_ROOT:-/mnt}"
+  physical_dir "$mount" mount || mount="${DEVBIN_WSL_MOUNT_ROOT:-/mnt}"
+  if windows_drive_of "$root" "$mount" drive; then
+    _note "location: $root is on the Windows drive at $drive, under WSL"
+    _detail "cause: WSL reaches $drive through its bridge to Windows, so it is slower, exec bits come from the mount options, and names ignore case"
+    _detail "fix: clone the project again inside WSL's own filesystem, eg under ~/, and work there"
+  else
+    _pass "location: $root is inside WSL's own filesystem"
+  fi
+  return 0
+}
+
+# PROJECT CHECKS (issue 0093): every executable in
+# bin/.devbin/cmd/doctor.d/ runs after devbin's own checks, and is counted into
+# the one summary. Discovered, as cmd/ is: a project adds a check by adding a
+# file. The directory is cmd/<name>.d/ because that is where a word under a
+# command already lives, so `doctor <check>` runs one check by the same rule.
+#
+# Until this a project's only way in was a handler at cmd/doctor, which shadows
+# devbin's doctor totally -- so its own checks stopped running -- or a handler
+# that called lib/cmd/doctor by path, reaching into devbin's side of the seam
+# and printing two summaries. A total shadow stays available for a project that
+# genuinely wants one.
+#
+# THE CONTRACT A CHECK KEEPS: it runs from the project root with no stdin. A
+# line whose first word is `ok`, `FAIL` or `note` counts exactly as devbin's own
+# do, and any other line is shown under it as detail. The exit status is read
+# too, and neither can hide the other: a non-zero exit with no FAIL line fails,
+# naming the exit, and a FAIL line fails even when the check exits 0. A check
+# that exits 0 and prints no verdict line is one pass, by its name.
+#
+# THE LIMIT, DECLARED: a check is not bounded. One that hangs -- an ssh with no
+# BatchMode, say -- holds doctor, which is a person's command at a terminal.
+project_checks_dir() { printf '%s/cmd/doctor.d' "$DEVBIN_DIR"; }
+
+# run_project_check <path> -- run one project check, relay it, count it.
+run_project_check() {
+  local f="$1" name="${1##*/}" out rc=0 line first rest verdicts=0 failed=0
+  out="$(cd "$PROJECT_ROOT" && "$f" </dev/null 2>&1)" || rc=$?
+  while IFS= read -r line; do
+    read -r first rest <<<"$line" || true
+    case "$first" in
+      ok)
+        _pass "$name${rest:+: $rest}"
+        verdicts=$((verdicts + 1))
+        ;;
+      FAIL)
+        _fail "$name${rest:+: $rest}"
+        verdicts=$((verdicts + 1))
+        failed=$((failed + 1))
+        ;;
+      note) _note "$name${rest:+: $rest}" ;;
+      *) [ -z "$line" ] || _detail "$line" ;;
+    esac
+  done <<<"$out"
+  if [ "$rc" -ne 0 ] && [ "$failed" -eq 0 ]; then
+    _fail "$name: exited $rc, printing no FAIL line"
+  elif [ "$rc" -eq 0 ] && [ "$verdicts" -eq 0 ]; then
+    _pass "$name"
+  fi
+  return 0
+}
+
+# run_project_checks -- every check in doctor.d, in name order, under a heading.
+run_project_checks() {
+  local dir f LC_ALL=C
+  dir="$(project_checks_dir)"
+  [ -d "$dir" ] || return 0
+  printf '\n  project checks (bin/.devbin/cmd/doctor.d):\n'
+  for f in "$dir"/*; do
+    [ -e "$f" ] || continue
+    if [ -d "$f" ]; then
+      _note "doctor.d: ${f##*/}/ is a directory, not a check, so nothing in it was run"
+    elif ! is_handler "$f"; then
+      _note "doctor.d: ${f##*/} is not executable, so it was not run -- fix: chmod +x bin/.devbin/cmd/doctor.d/${f##*/}"
+    else
+      run_project_check "$f"
+    fi
+  done
+  return 0
+}
+
+usage() {
+  cat <<EOF
+usage: $DEVBIN_INVOKE doctor [<check>]
+
+Checks this install and reports every finding, then runs every project check
+in bin/.devbin/cmd/doctor.d/. With <check>, runs that project check alone.
+Exits non-zero if anything failed. Notes are things worth knowing that are not
+faults.
+EOF
+}
+
+main() {
+  local only="" wsl=0
+  case "${1:-}" in
+    -h | --help)
+      usage
+      return 0
+      ;;
+    "") ;;
+    *)
+      # One project check by name, by the cmd/<name>.d/<word> rule. Anything
+      # else is refused, as it always was.
+      if [ $# -eq 1 ] && is_handler "$(project_checks_dir)/$1"; then
+        only="$1"
+      else
+        die "unknown argument '$1' (try: $DEVBIN_INVOKE doctor --help)"
+      fi
+      ;;
+  esac
+
+  # Asked before the header: a DEVBIN_WSL is_wsl refuses stops doctor here.
+  is_wsl && wsl=1
+
+  init_colors auto
+  # THE VERSION LINE FIRST, IN devbin'S OWN DEV TREE (T4; issue
+  # 0246): byte for byte as `--version` prints it there, on a line of its own,
+  # as every tool under the contract prints it. check_tree reads it below.
+  if [ "$(devbin_tree "$PROJECT_ROOT")" = dev ]; then
+    TREE_LINE="$(devbin_tree_line "$PROJECT_ROOT")"
+    printf '%s\n' "$TREE_LINE"
+  fi
+  printf 'devbin doctor -- %s\n\n' "$PROJECT_ROOT"
+
+  if [ -n "$only" ]; then
+    run_project_check "$(project_checks_dir)/$only"
+    printf '\n%d checks, %d failed, %d notes\n' "$CHECKS" "$FAILURES" "$NOTES"
+    [ "$FAILURES" -eq 0 ] || return 1
+    return 0
+  fi
+
+  check_dispatcher
+  check_runtime
+  check_config
+  check_languages
+  check_version
+  check_release
+  check_log_keys
+  check_devbin_version
+  check_manifest
+  check_line_endings
+  check_commands
+  check_handlers
+  check_shadowing
+  check_symlinks
+  check_source_currency
+  check_tree
+  check_switch
+  check_bash
+  check_cache
+  check_macos_cache
+  check_location "$wsl"
+  run_project_checks
+
+  printf '\n%d checks, %d failed, %d notes\n' "$CHECKS" "$FAILURES" "$NOTES"
+
+  # The false-green guard, and the reason it is a guard rather than a comment:
+  # every check above returns 0 whatever it finds, so a bug that skipped the lot
+  # would otherwise print a clean summary and exit 0 -- a doctor that examined
+  # nothing and pronounced the patient well.
+  if [ "$CHECKS" -eq 0 ]; then
+    warn "doctor ran NO checks -- that is itself a failure, not a clean bill"
+    return 1
+  fi
+  [ "$FAILURES" -eq 0 ] || return 1
+  return 0
+}
+
+main "$@"

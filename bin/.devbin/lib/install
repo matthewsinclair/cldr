@@ -1,0 +1,1896 @@
+#!/usr/bin/env bash
+#
+# lib/install -- vendoring, the checksum manifest, and what devbin owns.
+#
+# Sourced, not executed. Depends on lib/helpers ALONE, which is deliberate: the
+# commands built on it (`install`, `upgrade`, `doctor` among them) each operate
+# on a project that is not necessarily the one whose config is loaded, so a
+# function here reads no config for the tree it is handed. Everything it needs
+# about a tree is passed in or read off that tree. The one `cfg_get` here,
+# `install_prefix_configured`, reads devbin's OWN config, which its caller has
+# loaded, for the publish prefix -- never a target's.
+#
+# THE SEAM, which is the whole vendoring design in one sentence: everything under
+# `bin/.devbin/lib/` plus `bin/devbin` is DEVBIN's and is replaced wholesale;
+# everything else under `bin/.devbin/` -- `config.yaml`, `cmd/`, `help/` -- is
+# the PROJECT's and is never written by any function in this file. The one
+# write outside bin/.devbin/ is devbin's marked line-ending block in the
+# project's root .gitattributes (lf_block_write), and only between its markers,
+# so no line the project authored is written there either. Devbin's
+# own help pages for its built-ins are on devbin's side: they ship under lib/
+# (lib/pages/) and are replaced with the rest of it (issue 0113). One rule,
+# stated once, and `vendored_paths` is the only thing that enumerates the first
+# half. An upgrade that overwrote an authored help topic would be a data loss
+# bug in a tool whose entire job is to be safe to re-run.
+#
+[ -n "${_DEVBIN_INSTALL_LOADED:-}" ] && return 0
+_DEVBIN_INSTALL_LOADED=1
+
+# The manifest, relative to a project root. Devbin's file, but NOT under lib/:
+# it has to survive the wholesale replacement of the directory it describes.
+# DEVBIN_MANIFEST_REL moved to lib/helpers beside the readers that use it.
+
+# devbin_lib_dir, is_devbin_source, is_devbin_installed and is_devbin_dev_tree
+# moved to lib/helpers beside devbin_tree, which the dispatcher asks.
+
+# --- the local install (ST0005) ----------------------------------------------
+#
+# devbin publishes itself to a local install tree, and consumers vendor FROM
+# that rather than from the development checkout it is edited in. The reason is
+# measured rather than theoretical: projects were running bytes stamped
+# `+dirty -- THESE BYTES MATCH NO COMMIT`, and two vendors taken ten minutes
+# apart from the same dirty tree carried BYTE-IDENTICAL `source_commit` lines
+# over three differing files. The stamp cannot tell two dirty vendors apart.
+#
+# THE INSTALL TREE IS CONSUMER-SHAPED, WHICH IS WHY THIS SECTION IS SHORT.
+# `<prefix>/bin/devbin` + `<prefix>/bin/.devbin/lib/` + the ordinary manifest, so
+# `is_devbin_source`, `vendored_paths`, `copy_vendored`, `manifest_write` and
+# `upgrade --from` all apply UNCHANGED. What makes it an install rather than a
+# project is the ABSENCE of the project half -- no config.yaml, no cmd/, no
+# help/ -- and `bin/devbin` refuses to run without a config.yaml, so "an install
+# is never a cwd" is delivered by construction rather than by a check anyone can
+# disable.
+
+
+# manifest_source_token <srcroot> -- what a manifest records as its source: the
+# KIND of tree it was vendored from, never where that tree is (issue 0153).
+#
+#   install    a machine install, which says so in its own manifest
+#   checkout   a devbin source checkout (is_devbin_dev_tree)
+#   project    another project's vendored runtime, which has a manifest of its own
+#
+# The manifest is tracked in every project that vendors devbin, and a path in it
+# named the operator's directory layout in each of them, deliveries to clients
+# included. Where each kind lives is the machine's to say -- see manifest_source
+# and machine_install_state in lib/helpers -- so nothing tracked carries it.
+#
+# A TREE WITH NO MANIFEST TO READ IS NOT A PROJECT. It may be an install that
+# has lost its manifest, and recording `project` for it would send every later
+# upgrade asking for --from with the wrong reason. Refused, by name, rc 1. And
+# one whose manifest is there and cannot be read is refused as that, through
+# manifest_readable (issue 0144), never as a tree with no manifest.
+manifest_source_token() {
+  if ! manifest_readable "$1"; then
+    warn "cannot tell what kind of tree $1 is, since its manifest cannot be read (above)"
+    return 1
+  fi
+  if is_install_tree "$1"; then
+    printf 'install\n'
+  elif is_devbin_dev_tree "$1"; then
+    printf 'checkout\n'
+  elif [ -r "$(manifest_path "$1")" ]; then
+    printf 'project\n'
+  else
+    warn "cannot tell what kind of tree $1 is: it is no devbin checkout, and it has no manifest to say it is an install or a project"
+    return 1
+  fi
+}
+
+# source_token_note <srcroot> <token> -- one warning when a project is vendored
+# from a tree other than the one this machine's switch names, and nothing
+# otherwise (issues 0153, 0213).
+#
+# THE NEXT UPGRADE GOES WHERE THE SWITCH POINTS, WHATEVER WAS RECORDED. The
+# manifest records the kind of tree the bytes came from (`install`, `checkout`
+# or `project`), and manifest_source places every kind through the switch, so a
+# project vendored from a scratch install, another project or a checkout the
+# switch does not name will later read the switch's tree -- or none -- with
+# nothing saying that the tree it came from was another. Said at the write,
+# never discovered at the next upgrade.
+source_token_note() {
+  local src="$1" token="$2" m
+  [ -n "$token" ] || return 0
+  m="$(machine_install_state)"
+  case "$m" in
+    "at "*)
+      [ "${m#at }" -ef "$src" ] && return 0
+      warn "$src is not the tree $(machine_install_namer) names, so this project's next upgrade reads ${m#at } -- vendor from that tree, or pass --from to each later upgrade"
+      ;;
+    "bad "*) warn "${m#bad }, so this project's next upgrade will ask for --from until the switch names a devbin" ;;
+    # The remedy for the cause, from one place (brew_unplaced_fix, issue
+    # 0250), with dev or opt only when the devbin vendoring is the maintainer's.
+    *) warn "this machine names no devbin install ($(brew_unplaced_why)), so this project's next upgrade will ask for --from until one is named: $(brew_unplaced_fix "${PROJECT_ROOT:-}")" ;;
+  esac
+  return 0
+}
+
+# install_prefix_configured -- the prefix from config, tilde expanded, or rc 1
+# having printed nothing.
+#
+# THERE IS NO DEFAULT, AND THE ONE THAT USED TO BE HERE IS WHY THIS NOTE IS
+# LONG. This function ended with a fallback to a fixed path under `$HOME` -- one
+# operator's directory layout, written into the runtime every project vendors.
+# Every consumer carried it; a publish from any of them would have gone to a
+# path named after somebody else's home directory, and it would have SUCCEEDED,
+# because a publish to the wrong place is indistinguishable from a publish to
+# the right one.
+#
+# The location is already CONFIGURATION, by rule. A default does not soften that
+# rule, it relocates the decision: from a key somebody wrote to the absence of
+# one, which is the reading nobody makes deliberately. So unset returns 1 and
+# every caller that needs a prefix refuses by name -- see
+# `die_install_prefix_unset`, which is the one message every one of them prints.
+#
+# rc 1 RATHER THAN AN EMPTY STRING. A caller that forgets to check an empty
+# return proceeds with `""` and writes to `/bin`; a caller that forgets to check
+# rc 1 is killed by errexit at the assignment. Neither is correct, but only one
+# of them is silent. `shell-init` is the one caller for which unset is a legal
+# answer, and it says so at the call site.
+#
+# THE TILDE IS EXPANDED HERE AND THAT IS NOT A NICETY. A config value is a
+# literal string, so an unexpanded `~/opt/devbin` creates a directory actually
+# named `~` under the cwd, and every subsequent command finds an install exactly
+# where it looked. The failure is silent and self-consistent, which is the worst
+# combination this project has a name for.
+#
+# Through `home_expand` in lib/helpers, the one definition of the `~` form
+# (issue 0069). The copy that used to sit here turned `~/opt/devbin` into
+# `/opt/devbin` under an empty HOME -- a real directory a publish would write to.
+install_prefix_configured() {
+  local v
+  v="$(cfg_get install.prefix "")"
+  [ -n "$v" ] || return 1
+  home_expand "$v"
+  return 0
+}
+
+# die_install_prefix_unset [flag] -- the ONE refusal for a prefix that is not
+# configured. Never returns.
+#
+# ONE MESSAGE FOR EVERY CALLER. `install` publishes to the prefix, `upgrade`
+# replaces what is there, and a tool that distributes FROM it reads it too --
+# verbs reading the same key out of the same file and failing for the same
+# reason. A spelling of the fix-it instruction per caller is that many things to
+# keep in step, and the one that drifts is the one nobody was reading
+# (IN-AG-HIGHLANDER-001).
+#
+# CALLED AT STATEMENT LEVEL, NEVER INSIDE A COMMAND SUBSTITUTION at a caller
+# that has not set `inherit_errexit`. `die` exits, so the message is printed
+# either way -- but `local x="$(...)"` takes its rc from `local` and swallows
+# the failure while still showing the text, which is issue 0060 and is how a
+# refusal comes to read as a refusal and behave as a default.
+#
+# The flag is a PARAMETER because `--prefix` belongs to install and upgrade, and
+# another caller may have no such option. Naming a flag that does not exist is
+# worse than naming none.
+die_install_prefix_unset() {
+  local flag="${1:-}" extra=""
+  # An `if`, not `[ -n "$flag" ] && extra=...`: that AND-list is the final
+  # command of its own statement, so an empty flag would return 1 and take the
+  # whole handler down under `set -e` before the message was ever composed.
+  if [ -n "$flag" ]; then
+    extra="
+       or pass $flag for a single run"
+  fi
+  die "no install prefix is configured, and there is no default
+       set install.prefix in devbin's own bin/.devbin/config.yaml:
+
+         install:
+           prefix: ~/where/devbin/should/live$extra"
+}
+
+# publish_gate <srcroot> -- the dirty gate: refuse, by die, to publish an
+# install from <srcroot> unless git says the whole tree is exactly its commit.
+# install and upgrade both publish through it, so their refusals cannot drift
+# apart; each had a copy of the whole gate until issue 0185.
+#
+# A TREE GIT CANNOT SAY ANYTHING OF IS NAMED FOR WHAT IT IS (issue 0185): no
+# repository there, or one git cannot read, asked of git_repo_absent, with
+# git's own first line. Most often that is a repository another user owns,
+# which git refuses unless safe.directory names it; a corrupt index fails here
+# too, and git's line says which.
+publish_gate() {
+  local dirty why line
+  if ! dirty="$(tree_dirty_paths "$1")"; then
+    if git_repo_absent "$1"; then
+      die "cannot publish: $1 is not a git repository, so the commit this
+       install would claim cannot be established"
+    fi
+    why="$(git_failure_line "$1" status --porcelain)"
+    die "cannot publish: git cannot read the repository at $1, so the commit this
+       install would claim cannot be established${why:+ -- $why}"
+  fi
+  if [ -n "$dirty" ]; then
+    warn "refusing to publish: the source tree is dirty"
+    printf '%s\n' "$dirty" | while IFS= read -r line; do warn "  $line"; done
+    die "commit or stash, then publish -- an install cut from a dirty tree
+       records a commit that does not describe the bytes in it"
+  fi
+}
+
+# tree_dirty_paths <root> -- porcelain lines for an unclean tree, empty when clean.
+#
+# WHOLE TREE, not just the vendored set. The manifest's claim is "these
+# bytes are commit X", and that claim is only true when NOTHING in the tree is
+# uncommitted -- a dirty `.md` beside a clean `lib/` still means the recorded
+# commit does not describe the checkout the bytes came out of.
+#
+# A tree that is not a git repository at all returns non-zero rather than empty:
+# "no changes" and "cannot tell" must not render as the same answer. So does a
+# status git could not produce.
+#
+# AND DEVBIN'S HALF IS ASKED THE HARDENED QUESTION TOO (issue 0056). A plain
+# status lists no ignored file and reads no assume-unchanged mark, and those
+# are bytes that ship: an ignored `lib/.DS_Store` passed this gate and the
+# stamp, which asks seam_state_of, recorded `+dirty` on the install it let
+# through. The plain status still covers the rest of the tree; one extra line
+# names the seam's state whenever it is anything but committed, and the gate
+# refuses on it like any other.
+tree_dirty_paths() {
+  local root="$1" out state
+  git_readonly -C "$root" rev-parse --git-dir >/dev/null 2>&1 || return 2
+  out="$(git_readonly -C "$root" status --porcelain 2>/dev/null)" || return 2
+  state="$(seam_state_of "$root")"
+  if [ "$state" != committed ]; then
+    out="${out:+$out
+}seam: $state -- devbin's half is not exactly the committed bytes (an ignored file, a symlink, or a file git was told not to watch)"
+  fi
+  printf '%s' "$out"
+  return 0
+}
+
+# publish_install <srcroot> <dstroot> <version> -- write an install tree.
+#
+# ONE COPY, called by BOTH `install` (publishing a new one) and `upgrade`
+# (replacing an existing one). Those two differ only in their PRECONDITION --
+# must not exist / must exist -- and never in what they write, so a second copy
+# of the write would be two answers to one question waiting to disagree
+# (IN-AG-HIGHLANDER-001).
+#
+# Deliberately NOT `upgrade`'s per-file state machine. That machinery exists to
+# protect local edits in a project, and an install has no project half and no
+# author -- so preserving an edit here would preserve damage. The caller reports
+# any modified file BEFORE calling this; what happens after is a full replace.
+#
+# A FULL REPLACE REMOVES AS WELL AS WRITES (issue 0123). This copied every file
+# the source ships and deleted nothing, so a file the source stopped shipping
+# stayed in the install -- and every project vendors FROM the install, where
+# vendored_paths finds it with `find` and ships it on as devbin-owned. A
+# project upgrade retires a file its source stopped shipping, and that never
+# fired, because the file never stopped being shipped from the install. So
+# what the install holds under bin/.devbin/lib/ and the source no longer ships
+# is removed here, through remove_unshipped, and each removal is part of the
+# record below. EVERY file on disk there is a candidate: an install has no
+# author, so nothing under its lib/ can be anyone else's.
+#
+# THE LIST IS READ WHOLE, AND ITS STATUS WITH IT, BEFORE ANYTHING IS WRITTEN OR
+# REMOVED (issue 0127). Read inside the loop's heredoc, a failed enumeration
+# was a shorter list at rc 0; with removal in the same function, a shorter list
+# would now delete the install's intact copies of whatever find could not see.
+#
+# AND EVERY FILE ON IT IS READ, BEFORE ANYTHING IS WRITTEN OR REMOVED (issue
+# 0144). A source file cp cannot read stopped the copy loop partway, the files
+# before it replaced under the install's old manifest. The dirty gate refuses
+# such a source today, since git reports a file it cannot read as modified, and
+# this does not rely on it staying in front, for 0127's reason.
+#
+# Prints a record on stdout, `copied<TAB><n>` and then `removed<TAB><path>` for
+# each file removed, and the caller renders its own lines from it (through
+# publish_copied and publish_removed below): a function that both writes files
+# and formats a report is two jobs (IN-AG-THIN-COORD-001).
+publish_install() {
+  local srcroot="$1" dstroot="$2" version="$3" managed="${4:-}" rel src count=0 paths have removed
+  paths="$(vendored_paths "$srcroot")" || return 1
+  if ! source_readable "$srcroot" "$paths"; then
+    warn "cannot read the file(s) named above in $srcroot, so the install at $dstroot is left as it was"
+    return 1
+  fi
+  # And the manifest it will rewrite, for the same reason: manifest_write
+  # refuses one it cannot read, and that comes after the copies.
+  if ! manifest_readable "$dstroot"; then
+    warn "cannot read the manifest at $dstroot (named above), so the install there is left as it was"
+    return 1
+  fi
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    src="$(vendor_source_path "$srcroot" "$rel")" || return 1
+    copy_vendored "$src" "$dstroot/$rel" || return 1
+    count=$((count + 1))
+  done <<<"$paths"
+  printf 'copied\t%s\n' "$count"
+  have="$(vendored_dir_files "$dstroot")" || return 1
+  removed="$(remove_unshipped "$dstroot" "$paths" "$have")" || return 1
+  while IFS= read -r rel; do
+    [ -z "$rel" ] || printf 'removed\t%s\n' "$rel"
+  done <<<"$removed"
+  manifest_write "$dstroot" "$srcroot" "$version" "" install "$managed" || return 1
+  return 0
+}
+
+# install_managed_refusal <root> -- a refusal, rc 1, when the install at <root>
+# is the one Homebrew placed, which its manifest says when the formula published
+# it with --managed-by brew (issue 0195); rc 0, saying nothing, otherwise.
+#
+# A KEG IS HOMEBREW'S TO REPLACE. brew writes one whole at each version and
+# deletes the last, so bytes devbin wrote into one would be lost at the next
+# upgrade, and until then would sit under a version brew believes it installed.
+# So install and upgrade refuse to write into it, and name the verb that owns
+# it, as another tool's --managed-by brew does for its own keg.
+#
+# IT DECIDES ONLY ON A MARK IT CAN READ. A manifest that is there and cannot be
+# read is not passed over as "not Homebrew's": every writer this guards refuses
+# one before it writes, in its own words -- publish (lib/install's
+# publish_install), publish-upgrade and install --into (issue 0144) -- so the
+# refusal is theirs, once, and localinstall.bats holds a keg unchanged under it.
+# So the guard fails closed through the writers rather than in this check.
+install_managed_refusal() {
+  [ "$(manifest_field "$1" managed_by 2>/dev/null || true)" = brew ] || return 0
+  warn "$1 is the devbin Homebrew installed, and Homebrew replaces it whole at each version, so devbin will not write into it"
+  warn "  to update it:  brew upgrade devbin"
+  return 1
+}
+
+# remove_unshipped <dstroot> <shipped> <candidates> -- remove each candidate
+# file that <shipped> does not name, and each directory that leaves empty;
+# print every path removed, one per line. Paths are project-relative.
+#
+# ONE REMOVAL FOR ITS CALLERS, which differ only in their CANDIDATES (issues 0123
+# and 0129). Publish offers every file on disk under an install's lib/, since
+# an install has no author. `install --force` into a project offers only what
+# the previous manifest recorded: a file no manifest ever listed may be the
+# project's own, which doctor names as unowned and nothing deletes.
+#
+# ONLY bin/.devbin/lib/ IS EVER TOUCHED. A candidate anywhere else, or one
+# carrying `..`, is skipped rather than trusted: the candidate list is read
+# from disk or from a manifest, and neither may point a removal at the
+# project's own half.
+#
+# A directory goes only when a removal here emptied it. Nothing ships a
+# directory, so one that held only retired files is left over by definition,
+# while an empty directory that was already there is not this function's.
+#
+# AND A CANDIDATE THAT IS A SHIPPED FILE UNDER ANOTHER CASE IS KEPT, renamed to
+# the shipped spelling (keep_case_twin): on a case-insensitive disk it is the
+# file just shipped, and removing it emptied the install or the project of it.
+remove_unshipped() {
+  local dstroot="$1" shipped="$2" candidates="$3" rel dir
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    case "$rel" in
+      */../* | */..) continue ;;
+      bin/.devbin/lib/?*) ;;
+      *) continue ;;
+    esac
+    list_contains "$shipped" "$rel" && continue
+    [ -f "$dstroot/$rel" ] || continue
+    keep_case_twin "$shipped" "$dstroot" "$rel" && continue
+    rm -f -- "$dstroot/$rel" || return 1
+    printf '%s\n' "$rel"
+    dir="${rel%/*}"
+    while [ "$dir" != bin/.devbin/lib ] && [ -d "$dstroot/$dir" ] && [ -z "$(ls -A -- "$dstroot/$dir")" ]; do
+      rmdir -- "$dstroot/$dir" || return 1
+      dir="${dir%/*}"
+    done
+  done <<<"$candidates"
+  return 0
+}
+
+# publish_copied <record> / publish_removed <record> -- publish_install's
+# record, read back for its two callers: the number of files written, and each
+# file removed, one per line.
+publish_copied() { awk -F'\t' '$1 == "copied" { print $2 }' <<<"$1"; }
+publish_removed() { awk -F'\t' '$1 == "removed" { print $2 }' <<<"$1"; }
+
+# publish_replace <srcroot> <dstroot> -- replace the opt install at <dstroot>
+# with this checkout's runtime: `install --force` in devbin's own tree, the one
+# re-publish route (docs/dev-opt-brew.md, T2; issue 0213). It was
+# `upgrade`'s PUBLISH-UPGRADE mode, moved here whole so that publishing has one
+# verb and replacing has one writer, `publish_install`, as publishing a new
+# install does.
+#
+# ONLY A TREE DEVBIN WROTE IS REPLACED. <dstroot> must be an install whose
+# manifest says devbin wrote it, `tool: devbin`, or, in the manifest form
+# written before the contract, `kind: install` (devbin_install_old), which this
+# replace brings up to date. A keg Homebrew placed is refused first
+# (install_managed_refusal), and anything else is refused by name: replacing a
+# tree devbin did not write would delete what it held.
+publish_replace() {
+  local srcroot="$1" dstroot="$2" states modified unreadable unvouched record rel line
+  install_managed_refusal "$dstroot" || return 1
+  # A MANIFEST IT CANNOT READ IS NAMED AS THAT (issue 0144), first: read as a
+  # header with no `tool:` line, it would be called a tree devbin did not
+  # write.
+  manifest_readable "$dstroot" ||
+    die "cannot replace $dstroot: its manifest cannot be read (above), so whether devbin wrote it is unknown; nothing was published"
+  if [ "$(devbin_tree "$dstroot")" != opt ] && ! devbin_install_old "$dstroot"; then
+    warn "refusing to replace $dstroot: its manifest does not say devbin wrote it, so it is no opt install of devbin's"
+    warn "  move it aside, then run: $DEVBIN_INVOKE install"
+    return 1
+  fi
+
+  # THE SAME GATE AS A NEW PUBLISH, publish_gate, and it is the reason the
+  # install tree is worth having at all. An install cut from a dirty
+  # checkout launders the bytes through one more hop and gives them the LOOK of
+  # provenance.
+  publish_gate "$srcroot"
+
+  # AN EDITED INSTALL IS REPORTED BEFORE IT IS DISCARDED. Nobody should be
+  # editing an install and the replace is wholesale either way -- but a file
+  # silently overwritten is a change nobody can find afterwards, and saying so
+  # costs one manifest read that already has a reader.
+  # -F'\t' because manifest_check's contract is `<state><TAB><relpath>` and a
+  # vendored path containing a space would split into the wrong field under
+  # awk's default whitespace FS. No such path exists today, which is exactly the
+  # condition under which this would be found late.
+  # Its stderr is kept: each file it could not read is named there, with the
+  # checksum tool's reason, which the list below does not repeat. An install
+  # manifest it cannot read refuses before anything is written (issue 0144):
+  # publish carries the install's ancestry forward from it.
+  states="$(manifest_check "$dstroot")" ||
+    die "cannot read the install's manifest at $(manifest_path "$dstroot") (named above), so nothing was published"
+  modified="$(printf '%s\n' "$states" | awk -F'\t' '$1 == "modified" { print $2 }')"
+  if [ -n "$modified" ]; then
+    warn "this install has edited files; they are being REPLACED, not preserved:"
+    printf '%s\n' "$modified" | while IFS= read -r line; do warn "  $line"; done
+  fi
+  # AND ONE DEVBIN CANNOT READ IS NAMED THE SAME WAY (issue 0144). Replacing it
+  # needs no read of it -- the copy lands beside it and is renamed over it -- so
+  # this is the one writer an unreadable file does not stop, and the file is
+  # readable afterwards. What was in it is nobody's to recover, so it is said.
+  unreadable="$(printf '%s\n' "$states" | awk -F'\t' '$1 == "unreadable" { print $2 }')"
+  if [ -n "$unreadable" ]; then
+    warn "this install has files devbin cannot read; they are being REPLACED or removed, unread:"
+    printf '%s\n' "$unreadable" | while IFS= read -r line; do warn "  $line"; done
+  fi
+  # AND AN INSTALL WITH NO MANIFEST HAS NO EDIT IT CAN NAME (issue 0146): it
+  # read as none edited. Publishing replaces every file either way, so this is
+  # said rather than refused.
+  if unvouched="$(manifest_unvouched "$dstroot")"; then
+    if [ "$unvouched" = empty ]; then
+      warn "this install's manifest records no files, so an edit in it cannot be named; every file is being REPLACED unchecked"
+    else
+      warn "this install has no manifest, so an edit in it cannot be named; every file is being REPLACED unchecked"
+    fi
+  fi
+
+  record="$(publish_install "$srcroot" "$dstroot" "$(devbin_runtime_version)")" ||
+    die "failed to write the install at $dstroot"
+  printf '  replaced   %d files (bin/devbin, bin/.devbin/lib/)\n' "$(publish_copied "$record")"
+  # What the source stopped shipping leaves the install here, or every project
+  # vendoring from it would keep receiving it as devbin's (issue 0123).
+  while IFS= read -r rel; do
+    [ -z "$rel" ] || printf '  removed    %s (devbin no longer ships it)\n' "$rel"
+  done <<<"$(publish_removed "$record")"
+  printf '  recorded   %s\n' "$(manifest_field "$dstroot" source_commit 2>/dev/null || printf 'unrecorded')"
+  return 0
+}
+
+# vendored_paths <srcroot> -- every file devbin owns, as paths RELATIVE to a
+# project root, sorted. This is the file list, and the only one.
+#
+# `bin/devbin` plus one line per file under the source's lib/. Sorted so the
+# manifest is stable across machines -- `find` returns directory order, which
+# differs between filesystems, and an unstable manifest makes every upgrade
+# report look like a change.
+#
+# A FILE find CANNOT REACH IS A FAILURE, NOT A SHORTER LIST (issue 0127). This
+# was `find "$lib" -type f 2>/dev/null | sort | while ...; return 0`: find's
+# stderr thrown away, no status read, and 0 returned however much of lib/ it
+# could not see. A directory under lib/ at mode 000 listed nothing of its own
+# and the publish shipped without it, at rc 0. find's output is taken whole
+# first, its status read, and its stderr left on screen to name the path.
+_vendored_find() {
+  local lib="$1" files f
+  files="$(find_walk "$lib" -type f -print)" || return 1
+  [ -n "$files" ] || return 0
+  printf '%s\n' "$files" | LC_ALL=C sort | while IFS= read -r f; do
+    printf 'bin/.devbin/lib/%s\n' "${f#"$lib"/}"
+  done
+  return 0
+}
+
+vendored_paths() {
+  local srcroot="$1" lib files
+  lib="$(devbin_lib_dir "$srcroot")" || return 1
+  files="$(_vendored_find "$lib")" || return 1
+  printf 'bin/devbin\n'
+  [ -z "$files" ] || printf '%s\n' "$files"
+  return 0
+}
+
+# vendored_dir_files <root> -- every file actually sitting under <root>'s
+# VENDORED lib, as project-relative paths, sorted.
+#
+# The target-side twin of vendored_paths, and deliberately a separate function
+# rather than a parameter on that one: vendored_paths asks a SOURCE what it
+# ships, where the runtime is at `lib/` in the devbin source checkout and at
+# `bin/.devbin/lib/` elsewhere;
+# this asks an INSTALL what is on disk, where the answer is always
+# `bin/.devbin/lib/`. One is a statement of intent and the other an inventory --
+# comparing them is the entire point, so collapsing them would erase the
+# difference being measured.
+#
+# The same find as vendored_paths', through the same helper, so an install
+# whose lib/ cannot be read fails here rather than reading as a smaller one.
+vendored_dir_files() {
+  local lib="$1/bin/.devbin/lib"
+  [ -d "$lib" ] || return 0
+  _vendored_find "$lib"
+}
+
+# vendor_source_path <srcroot> <relpath> -- where <relpath> lives in the SOURCE.
+#
+# The inverse of the mapping vendored_paths applies. It is not the identity: a
+# source checkout keeps its runtime at `lib/`, an installed project at
+# `bin/.devbin/lib/`, and both are legal sources.
+vendor_source_path() {
+  local srcroot="$1" rel="$2" lib
+  case "$rel" in
+    bin/devbin)
+      printf '%s\n' "$srcroot/bin/devbin"
+      return 0
+      ;;
+    bin/.devbin/lib/*)
+      lib="$(devbin_lib_dir "$srcroot")" || return 1
+      printf '%s\n' "$lib/${rel#bin/.devbin/lib/}"
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+# vendored_scope <srcroot> -- devbin's half as git PATHSPECS into the source,
+# one per line. The scope, not the roll-call.
+#
+# A member of the vendored_paths / vendored_dir_files family, and a
+# separate function for the same reason those two are separate: it answers a
+# different question. `vendored_paths` asks WHICH FILES ship, `vendored_dir_files`
+# asks what is ON DISK, and this asks WHERE devbin's half lives -- which is the
+# only shape a git pathspec can take.
+#
+# IT IS DELIBERATELY NOT BUILT ON vendored_paths, and that is the whole point.
+# That function enumerates with `find`, so a vendored file DELETED but not yet
+# committed simply stops being listed, and a `git status` limited to the names
+# that survive reports nothing at all. Measured on a fixture with `lib/beta`
+# removed: the file-list pathspec answers CLEAN while a vendored file is
+# missing; the directory pathspec answers ` D lib/beta`. Under-reporting clean
+# is the one direction this subsystem must never go, and a directory is read
+# against HEAD where a name list is read against disk.
+vendored_scope() {
+  local srcroot="$1" lib
+  lib="$(devbin_lib_dir "$srcroot")" || return 1
+  printf '%s\n' "$srcroot/bin/devbin"
+  printf '%s\n' "$lib"
+  return 0
+}
+
+# copy_vendored <src> <dst> -- copy one file, creating its directory, and carry
+# the executable bit across.
+#
+# The bit is copied per file rather than by re-deriving which paths ought to be
+# executable. `cp` gives a new file the source's mode on both platforms, but
+# relying on that leaves a silent failure -- a `lib/cmd/test` that arrives
+# non-executable resolves and then does not run -- resting on a detail of cp.
+# Three forks per file became one. `$(dirname)` is an external command and
+# `mkdir -p` runs whether or not the directory is there, so a 26-file vendor
+# spent 78 processes to make three directories and set two exec bits -- and the
+# test suite installs a fixture per test. `${dst%/*}` and `[ -d ]` are builtins;
+# the chmods now fire only when the mode is actually wrong, which on both
+# platforms means almost never, since cp gives a new file the source's mode.
+# REPLACING an existing file goes through a temporary and a rename, so a reader
+# sees the old file or the new one and never a half-written one. `sed_inplace`
+# in lib/helpers does this already and for the same reason; upgrade rewriting
+# the dispatcher and every library under a project someone may be running is the
+# case that matters most.
+#
+# Only the replace path pays for it. A file that does not exist yet cannot be
+# read mid-write, so a fresh install keeps the single-fork copy the vendoring
+# loop was tuned for -- and a fresh install is what the test suite does per
+# fixture.
+copy_vendored() {
+  local src="$1" dst="$2" dir="${2%/*}" tmp
+  [ -d "$dir" ] || mkdir -p "$dir" || return 1
+
+  if [ ! -e "$dst" ]; then
+    cp "$src" "$dst" || return 1
+    if [ -x "$src" ]; then
+      [ -x "$dst" ] || chmod +x "$dst"
+    elif [ -x "$dst" ]; then
+      chmod -x "$dst"
+    fi
+    return 0
+  fi
+
+  # `$$` is the shell's PID and a subshell inherits it (lib/runlog says why that
+  # makes it useless for uniqueness ACROSS processes). Here it only has to be
+  # unique within one install, beside a destination no other path writes.
+  tmp="$dst.devbin-new.$$"
+  cp "$src" "$tmp" || {
+    rm -f "$tmp"
+    return 1
+  }
+  if [ -x "$src" ]; then
+    [ -x "$tmp" ] || chmod +x "$tmp"
+  elif [ -x "$tmp" ]; then
+    chmod -x "$tmp"
+  fi
+  mv -f "$tmp" "$dst" || {
+    rm -f "$tmp"
+    return 1
+  }
+  return 0
+}
+
+# --- line endings: devbin's block in a project's .gitattributes (ST0008) ------
+#
+# A CHECKOUT THAT CONVERTS LINE ENDINGS BREAKS THE VENDORED RUNTIME. git on
+# Windows checks text out with CRLF unless the repository says otherwise, and a
+# script whose shebang then reads `bash\r` does not run, while the manifest
+# reads every converted file as edited in place. The rule that stops it lives
+# in the repository, so every clone gets it, rather than in each clone's git
+# settings, which reach only the developers who set them.
+#
+# ONE MARKED BLOCK, devbin's, in the project's ROOT .gitattributes, covering the
+# launcher and everything under bin/.devbin/: one block per tool that writes
+# into a project, each with one writer. The launcher sits beside bin/.devbin/,
+# so no file of devbin's own could reach it. Everything outside the markers is
+# the project's and is carried byte for byte; inside them is devbin's, written
+# by install and rewritten by upgrade, so an edit there is replaced. Another
+# tool's block beside it is another writer's, and devbin writes no rule for any
+# file but its own.
+#
+# `text=auto` LEAVES A BINARY ALONE, so a compiled handler under bin/.devbin/cmd/
+# is not rewritten, and eol=lf holds every text file to LF on every platform.
+LF_BLOCK_BEGIN='# >>> devbin: line endings >>>'
+LF_BLOCK_END='# <<< devbin: line endings <<<'
+
+# lf_block -- devbin's block, on stdout.
+lf_block() {
+  printf '%s\n' "$LF_BLOCK_BEGIN"
+  printf '# Written by devbin install and kept by devbin upgrade, which replace\n'
+  printf '# what is between these two lines: the vendored runtime checks out with\n'
+  printf '# LF line endings on every machine, Windows included.\n'
+  printf 'bin/devbin text=auto eol=lf\n'
+  printf 'bin/.devbin/** text=auto eol=lf\n'
+  printf '%s\n' "$LF_BLOCK_END"
+}
+
+# lf_block_merge -- a .gitattributes read on stdin, with devbin's block in it,
+# on stdout. Pure. Returns 0 when one block was found and replaced where it
+# stands, 3 when none was and the block was appended, after a blank line when
+# the file's last line is not blank.
+#
+# A marker standing alone, an end before its begin, or two blocks returns 2,
+# and what was printed is not to be used: which lines are devbin's cannot be
+# told, so the caller writes none. A marker is a whole line, read with a
+# trailing CR stripped, so a .gitattributes that was itself checked out CRLF
+# still has its block found; a line that only quotes one is the project's.
+#
+# awk ends every line it prints with a newline, so a last line that had none
+# gains one here; lf_block_write takes it back off where that line is the
+# project's and nothing follows it.
+lf_block_merge() {
+  local block
+  block="$(lf_block)"
+  # Through the environment, not -v: -v reads backslash escapes and, in some
+  # awks, refuses a value holding a newline.
+  LF_BEGIN="$LF_BLOCK_BEGIN" LF_END="$LF_BLOCK_END" LF_BLOCK="$block" awk '
+    BEGIN { begin = ENVIRON["LF_BEGIN"]; end = ENVIRON["LF_END"]; block = ENVIRON["LF_BLOCK"] }
+    { line = $0; sub(/\r$/, "", line) }
+    line == begin {
+      if (state != 0) bad = 1
+      state = 1; blocks++
+      next
+    }
+    line == end {
+      if (state != 1) bad = 1
+      state = 2
+      print block
+      next
+    }
+    state == 1 { next }
+    { print; last = line; n++ }
+    END {
+      if (bad || state == 1 || blocks > 1) exit 2
+      if (blocks == 0) {
+        if (n > 0 && last != "") print ""
+        print block
+        exit 3
+      }
+    }
+  '
+}
+
+# lf_block_write <root> -- put devbin's block into <root>/.gitattributes, and
+# say on stdout what happened: `wrote` (the file was not there), `added` (the
+# file was, without the block), `updated` (the block differed and was
+# replaced) or `kept` (it was there as written). Returns 1, naming why on
+# stderr, with nothing written, when the file cannot be read or replaced, is
+# not a file, or has markers that do not make one block.
+#
+# THE PROJECT'S BYTES STAY ITS OWN, with one exception: appending after a last
+# line that has no newline gives that line one, since the block cannot follow
+# it otherwise. Where the block is replaced in place and the project's last
+# line, after it, has no newline, it keeps none.
+#
+# Through replace_file, so a reader sees the old file or the new one, a link
+# is written through rather than replaced, and the file keeps its mode.
+lf_block_write() {
+  local root="$1" file="$1/.gitattributes" old="" new tail rc word=wrote
+  if [ -e "$file" ] || [ -L "$file" ]; then
+    if [ ! -f "$file" ]; then
+      warn "$file is not a file, so devbin's line-ending block cannot be written into it"
+      return 1
+    fi
+    if ! old="$(cat "$file" && printf x)"; then
+      warn "cannot read $file, so devbin's line-ending block was not written into it"
+      return 1
+    fi
+    old="${old%x}"
+    word=""
+  fi
+  # In an `if`, so the merge's own statuses reach the caller: under errexit a
+  # bare failing pipeline would end the substitution before its x.
+  rc=0
+  new="$(if printf '%s' "$old" | lf_block_merge; then s=0; else s=$?; fi
+    printf x
+    exit "$s")" || rc=$?
+  new="${new%x}"
+  case "$rc" in
+    0) word="${word:-updated}" ;;
+    3) word="${word:-added}" ;;
+    *)
+      warn "$file has a devbin line-ending marker that does not make one block (a begin with no end, an end with no begin, or two blocks), so which lines are devbin's cannot be told and nothing was written"
+      warn "  leave one '$LF_BLOCK_BEGIN' line and one '$LF_BLOCK_END' line below it, or delete both, and run it again"
+      return 1
+      ;;
+  esac
+  if [ "$rc" -eq 0 ] && [ -n "$old" ] && [ "${old: -1}" != $'\n' ]; then
+    tail="${old##*$'\n'}"
+    [ "${tail%$'\r'}" = "$LF_BLOCK_END" ] || new="${new%$'\n'}"
+  fi
+  if [ "$word" = updated ] && [ "$new" = "$old" ]; then
+    printf 'kept\n'
+    return 0
+  fi
+  replace_file "$file" printf '%s' "$new" || {
+    warn "could not write $file, so devbin's line-ending block is not in it"
+    return 1
+  }
+  printf '%s\n' "$word"
+}
+
+# lf_block_said <word> -- the report line for lf_block_write's word.
+lf_block_said() {
+  case "$1" in
+    wrote) printf '  wrote      .gitattributes (devbin'"'"'s line-ending block: LF for bin/devbin and bin/.devbin/)\n' ;;
+    added) printf '  added      devbin'"'"'s line-ending block to .gitattributes (LF for bin/devbin and bin/.devbin/)\n' ;;
+    updated) printf '  updated    devbin'"'"'s line-ending block in .gitattributes\n' ;;
+    kept) printf '  kept       devbin'"'"'s line-ending block in .gitattributes\n' ;;
+  esac
+}
+
+# cr_files <root> <rel>... -- each <rel> under <root> holding a CR byte, one per
+# line, as given. Binary files are passed over (grep -I), since a CR byte in
+# one is data, not a line ending. Returns 1 when grep could not read a file,
+# whose error names it, after printing what it found.
+cr_files() {
+  local root="$1" rc=0 out rel
+  shift
+  [ $# -gt 0 ] || return 0
+  # Each path joined to <root> rather than grep run from inside it, so a root
+  # that cannot be entered is grep's error, status 2, never a cd's 1, which
+  # would read as "none found".
+  out="$(LC_ALL=C grep -I -l -e $'\r' -- "${@/#/$root/}")" || rc=$?
+  while IFS= read -r rel; do
+    [ -z "$rel" ] || printf '%s\n' "${rel#"$root"/}"
+  done <<<"$out"
+  [ "$rc" -le 1 ]
+}
+
+# --- the manifest ------------------------------------------------------------
+#
+# `<sha256>  <path>` lines in the conventional shasum spelling, under a `#`
+# header carrying the facts the file itself cannot supply: which devbin wrote
+# it, where that devbin was, and WHICH COMMIT OF IT. The devbin and where it was
+# are read back -- the version by doctor, the source by upgrade, which is what
+# lets `devbin upgrade` be typed with no arguments from inside the installed
+# project.
+
+# The manifest readers live in lib/helpers -- see the note there. lib/install
+# remains their only heavy caller; the dispatcher needs only header lines.
+
+# seam_git_verdict <status-porcelain> <ls-files-v> -- the state those two outputs
+# describe: committed, DIRTY, not watched or not tracked. Pure, so every line
+# shape is tested on strings rather than on a repository built to produce it.
+#
+# THE ORDER IS THE STRONGEST THING GIT CAN SAY FIRST. A changed, added, deleted
+# or untracked path is a fact about the bytes: DIRTY. A path marked
+# assume-unchanged (a lowercase tag) or skip-worktree (`S`) is one git was told
+# not to read, so its silence certifies nothing: not watched. An ignored path
+# (`!!`) is runtime bytes a clone does not get: not tracked. Only when none of
+# these appears is it committed. DIRTY was once checked LAST, so one ignored
+# `.DS_Store` beside a real edit hid the edit.
+#
+# EVERY LINE IS READ, NOT ONLY THE FIRST. A test built with one offending file
+# puts it first by construction; the arms carry it on a later line as well.
+seam_git_verdict() {
+  local status="$1" tags="$2" line dirty="" ignored="" blind=""
+  while IFS= read -r line; do
+    case "$line" in
+      '') ;;
+      '!! '*) ignored=yes ;;
+      *) dirty=yes ;;
+    esac
+  done <<LINES
+$status
+LINES
+  while IFS= read -r line; do
+    case "$line" in
+      [a-z]' '* | 'S '*) blind=yes ;;
+    esac
+  done <<LINES
+$tags
+LINES
+  if [ -n "$dirty" ]; then
+    printf 'DIRTY\n'
+  elif [ -n "$blind" ]; then
+    printf 'not watched\n'
+  elif [ -n "$ignored" ]; then
+    printf 'not tracked\n'
+  else
+    printf 'committed\n'
+  fi
+}
+
+# seam_git_state <repo> [--may-be-gone <path>]... <path>... -- is devbin's half,
+# at these paths (absolute, or relative to <repo>), committed in <repo>? One of
+# committed, DIRTY, not watched, not tracked, UNREADABLE.
+#
+# THE ONE ANSWER TO THAT QUESTION (issue 0056). `install` stamps a vendor's
+# provenance with it (source_commit_of), and a caller that reports on many trees
+# reads each one with it. They were two implementations, and they already
+# disagreed: the report had been hardened and the stamp had not, so `install`
+# could record a clean sha over bytes the report called DIRTY.
+#
+# AN EMPTY `git status` MEANS COMMITTED ONLY WHEN GIT WAS LOOKING, so:
+#   - untracked files are listed whatever the repository says
+#     (`--untracked-files=all`), and ignored ones too (`--ignored=matching`);
+#   - a submodule's own `ignore` setting is overridden (`--ignore-submodules=none`);
+#   - assume-unchanged and skip-worktree marks are read (`ls-files -v`);
+#   - a SYMLINK anywhere in the paths is not tracked, because git records the
+#     link's text and never the bytes behind it, which are what a digest reads
+#     and what runs;
+#   - a path that does not exist is UNREADABLE: the caller named the half, and a
+#     half that is not there cannot be committed;
+#   - EXCEPT ONE THE CALLER NAMES WITH --may-be-gone (issue 0154). Where something
+#     is there it is read like every other path; where nothing is, git is still
+#     asked about it, so a deletion git has not been told of is DIRTY and one it
+#     has changes nothing. An install that has lost its manifest is the case: its
+#     seam is the launcher and the lib, and a census that called the absent
+#     manifest UNREADABLE failed on a question git could answer.
+#
+# The paths are DIRECTORY pathspecs where they are directories, so a vendored
+# file deleted and not committed still shows (see vendored_scope).
+seam_git_state() {
+  local repo="$1" p links out tags
+  local -a paths=() gone=()
+  shift
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = --may-be-gone ]; then
+      [ "$#" -ge 2 ] || { printf 'UNREADABLE\n'; return 0; }
+      case "$2" in /*) p="$2" ;; *) p="$repo/$2" ;; esac
+      if [ -e "$p" ] || [ -L "$p" ]; then paths+=("$2"); else gone+=("$2"); fi
+      shift 2
+    else
+      paths+=("$1")
+      shift
+    fi
+  done
+  [ "${#paths[@]}" -gt 0 ] || { printf 'UNREADABLE\n'; return 0; }
+  for p in "${paths[@]}"; do
+    # A relative path is a pathspec from <repo>, which is where git reads it.
+    case "$p" in /*) ;; *) p="$repo/$p" ;; esac
+    if [ -L "$p" ]; then
+      printf 'not tracked\n'
+      return 0
+    fi
+    [ -e "$p" ] || { printf 'UNREADABLE\n'; return 0; }
+    if [ -d "$p" ]; then
+      # find's status is read and its text hidden (issue 0139): UNREADABLE is
+      # the seam's own answer for a cell it cannot vouch for, and says so.
+      # find-status: read -- UNREADABLE names the cell, so find's text is hidden.
+      links="$(find_walk "$p" -type l -print 2>/dev/null)" || { printf 'UNREADABLE\n'; return 0; }
+      [ -z "$links" ] || { printf 'not tracked\n'; return 0; }
+    fi
+  done
+  out="$(git_readonly -C "$repo" status --porcelain --untracked-files=all \
+    --ignored=matching --ignore-submodules=none -- "${paths[@]}" ${gone[@]+"${gone[@]}"} 2>/dev/null)" ||
+    { printf 'UNREADABLE\n'; return 0; }
+  tags="$(git_readonly -C "$repo" ls-files -v -- "${paths[@]}" ${gone[@]+"${gone[@]}"} 2>/dev/null)" ||
+    { printf 'UNREADABLE\n'; return 0; }
+  seam_git_verdict "$out" "$tags"
+}
+
+# seam_state_of <srcroot> -- seam_git_state over devbin's half of a SOURCE, as
+# vendored_scope locates it: the whole tree when the half cannot be located.
+#
+# THE ONE QUESTION BEHIND BOTH THE PUBLISH GATE AND THE STAMP (issue 0056). The
+# stamp was hardened and the gate was not, so a checkout holding an ignored
+# `lib/.DS_Store` passed the gate and was stamped `+dirty` -- an install the
+# dirty gate exists to refuse, published at exit 0. Asked through one
+# function, the gate and the stamp cannot disagree.
+seam_state_of() {
+  local root="$1" scope_lines p
+  local -a scope=()
+  # vendored_scope is read into a variable and checked, not through a process
+  # substitution, whose failure nothing would see.
+  if scope_lines="$(vendored_scope "$root")"; then
+    while IFS= read -r p; do
+      [ -n "$p" ] && scope+=("$p")
+    done <<SCOPE
+$scope_lines
+SCOPE
+  fi
+  [ "${#scope[@]}" -gt 0 ] || scope=("$root")
+  seam_git_state "$root" "${scope[@]}"
+}
+
+# source_commit_of <srcroot> -- WHICH devbin these bytes came from, as a line.
+#
+# PUBLIC, and named that way because a second file depends on it. `manifest_write`
+# stamps it and `lib/cmd/vendor` prints it, and an underscore on a function
+# reaching across a file boundary is a false signal about its contract -- the
+# same reason the three tab-lookups above became one named pair.
+#
+# `devbin_version` is a semver that moves once a release, so it cannot tell
+# installs from the same release apart, and a consumer comparing its vendored
+# tree to this manifest is otherwise doing a purely internal check: a re-vendor
+# rewrites the files AND this header together, so it is indistinguishable from a
+# local patch with the manifest regenerated. Measured, not imagined -- a
+# consumer reported its tree "stock, 27 of 27" over an uncommitted re-vendor
+# eleven minutes old, and every check involved was correct. Nothing was asking
+# what the tree corresponds to OUTSIDE itself.
+#
+# DIRTY IS RECORDED RATHER THAN HIDDEN, because a sha read from a dirty source
+# describes bytes no commit has, and the bare sha would be a confident false
+# statement. Not a checkout at all says so in words: an ABSENT field is what an
+# older devbin wrote, and absent must never be readable as clean.
+#
+# DIRTY IS ASKED OF DEVBIN'S HALF, NOT OF THE TREE (issue 0033). The question
+# this field answers is what the VENDORED bytes correspond to, and a file
+# outside the seam cannot change that answer. A tree-wide `git status` made the
+# stamp true about the tree and false about the bytes: one open planning file
+# in the source stamped consuming projects THESE BYTES MATCH NO COMMIT over a
+# surface that matched HEAD exactly. It erred safe, which is why it survived --
+# but in a project with live planning files something is always mid-edit, so the
+# accurate stamp was close to unreachable and a warning that never clears stops
+# being read. Narrowed, it still errs safe: `vendored_scope` is a DIRECTORY
+# pathspec precisely so a deleted vendored file is still seen.
+#
+# WHEN THE HALF CANNOT BE LOCATED the tree-wide question is asked instead,
+# rather than a narrower one being invented. A root with no `lib/` and no
+# `bin/.devbin/lib/` is not a devbin source this can clear, and absent must
+# never be readable as clean.
+# PROVENANCE IS TRANSITIVE, AND WITHOUT THIS IT IS LOST IN TRANSIT (ST0005).
+#
+# An INSTALL tree is not a git checkout, so vendoring from one used to stamp the
+# consumer `not a git checkout -- these bytes name no commit` -- while the
+# install's OWN manifest recorded the exact sha it was cut from, one file away.
+# Every consumer would have recorded LESS provenance than before the install tree
+# existed, which is the precise opposite of what this thread is for.
+#
+# MEASURED, not anticipated: the first consumer upgraded from the first install
+# recorded `names no commit` against an install stamped with its exact sha.
+#
+# The install's stamp is FORWARDED VERBATIM rather than re-derived. It was
+# written by this same function under the dirty gate, so it is already either a
+# clean sha or an explicit refusal-shaped string; re-deriving it here is
+# impossible anyway, since the commit is not reachable from a tree with no .git.
+source_commit_of() {
+  local root="$1" sha state forwarded
+  if is_install_tree "$root"; then
+    forwarded="$(manifest_field "$root" source_commit 2>/dev/null || true)"
+    if [ -n "$forwarded" ]; then
+      printf '%s\n' "$forwarded"
+      return 0
+    fi
+    printf 'an install with no recorded commit -- these bytes name no commit\n'
+    return 0
+  fi
+  # git_readonly for the sha as well as the state, so an inherited GIT_DIR cannot
+  # pair one repository's HEAD with another's status.
+  # AND A CHECKOUT GIT COULD NOT READ IS NAMED AS ONE (issue 0185): this line is
+  # written into the consumer's manifest, beside `source: checkout`. "Could not
+  # read" is true of a repository git refuses, the case that made a manifest
+  # contradict itself, and of every other one git_repo_absent cannot call absent.
+  if ! git_readonly -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+    if git_repo_absent "$root"; then
+      printf 'not a git checkout -- these bytes name no commit\n'
+    else
+      printf 'a checkout git could not read -- these bytes name no commit\n'
+    fi
+    return 0
+  fi
+  sha="$(git_readonly -C "$root" rev-parse HEAD 2>/dev/null)" || sha=""
+  [ -n "$sha" ] ||
+    { printf 'a checkout with no HEAD -- these bytes name no commit\n'; return 0; }
+  # Through seam_state_of, the one hardened answer to "is devbin's half
+  # committed" (issue 0056). ANYTHING BUT committed IS DIRTY HERE: not watched,
+  # not tracked and UNREADABLE are git declining to vouch for the bytes, and the
+  # stamp's one job is never to name a commit those bytes might not be.
+  state="$(seam_state_of "$root")"
+  if [ "$state" != committed ]; then
+    printf '%s +dirty -- THESE BYTES MATCH NO COMMIT\n' "$sha"
+  else
+    printf '%s\n' "$sha"
+  fi
+  return 0
+}
+
+# manifest_entries <root> -- the `<sha><TAB><relpath>` body, comments stripped.
+#
+# Retabbed from the file's two-space separator so callers split on a character
+# that cannot appear in a path. TAB is an IFS whitespace character and would
+# eat an empty leading field, but neither field here is ever empty, so the
+# `${line%%<TAB>*}` dance is not needed -- see lib/help for the case where it is.
+#
+# rc 1 with nothing printed when there is no manifest, and rc 1 NAMING IT when
+# there is one it cannot read (issue 0144). The read's own failure was followed
+# by `return 0`, so an unreadable manifest was a manifest of no entries: doctor
+# passed `0 vendored files intact` over it and upgrade found nothing recorded,
+# so nothing edited. A caller to whom absence means "no entries" asks
+# manifest_readable first, or tests the file, and never swallows this status.
+manifest_entries() {
+  local path
+  path="$(manifest_path "$1")"
+  [ -f "$path" ] || return 1
+  # ASKED BEFORE THE REDIRECT, so the shell's own message about a file it
+  # cannot open never stands beside this one, saying the same thing in a form
+  # nobody can act on (issue 0215). A read that fails past a readable test
+  # still fails, and is still named.
+  if [ ! -r "$path" ] || ! _two_space_to_tab <"$path"; then
+    warn "cannot read the manifest $path"
+    return 1
+  fi
+  return 0
+}
+
+# manifest_readable <root> -- rc 0 when <root> has no manifest or one that
+# reads whole; rc 1, the manifest named on stderr, when it has one it cannot
+# read (issue 0144). For a command to refuse before it resolves anything from
+# the manifest: its header, read field by field, reads as unrecorded then.
+manifest_readable() {
+  [ -f "$(manifest_path "$1")" ] || return 0
+  manifest_entries "$1" >/dev/null
+}
+
+# manifest_missing <root> -- rc 0 when <root> carries a vendored runtime and no
+# manifest: an install whose vendored files cannot be checked (issue 0146).
+#
+# THE TEST THAT TELLS IT FROM A PROJECT DEVBIN WAS NEVER INSTALLED IN is
+# is_devbin_installed, bin/.devbin/lib present: a first install has nothing
+# vendored to protect, and this is rc 1 there. An installed project with no
+# manifest read as one with no entries -- every file `new` -- so upgrade
+# overwrote an edit at exit 0, wrote a fresh manifest over what it had just
+# replaced, and doctor passed the next run. Its readers each refuse or read it
+# as unknown, and none as level: manifest_check keeps its silent empty answer
+# for the caller that has asked this first.
+manifest_missing() {
+  is_devbin_installed "$1" || return 1
+  [ ! -f "$(manifest_path "$1")" ]
+}
+
+# manifest_unvouched <root> -- `missing` or `empty` when <root> carries a
+# vendored runtime whose manifest vouches for no file at all; rc 1, nothing
+# printed, when it records files or nothing is installed here; rc 2, nothing
+# printed, when it cannot be read, which is neither (issue 0159).
+#
+# A MANIFEST THAT RECORDS NOTHING IS A MISSING ONE WITH A HEADER. Cut to its
+# `#` lines, it read as an install with nothing to protect: doctor passed
+# `0 vendored files intact` and listed every vendored file as unowned, and
+# upgrade overwrote an edit at exit 0, which is 0146's hazard arriving through
+# a file that is there. So every reader that refuses or fails a missing
+# manifest asks this instead, and says which it found. One that cannot be read
+# is manifest_readable's to name, first: an `if` reads rc 2 as vouched, so a
+# caller asks that before this.
+manifest_unvouched() {
+  local entries
+  is_devbin_installed "$1" || return 1
+  if [ ! -f "$(manifest_path "$1")" ]; then
+    printf 'missing\n'
+    return 0
+  fi
+  entries="$(manifest_entries "$1" 2>/dev/null)" || return 2
+  [ "$(nonempty_lines "$entries")" -eq 0 ] || return 1
+  printf 'empty\n'
+}
+
+# manifest_unvouched_said <state> [<root>] -- the clause each reader puts in
+# front of its own consequence, so each state is said one way everywhere.
+# With <root>, the manifest is named by its full path, for a reader reporting on
+# a tree other than the one it runs in.
+manifest_unvouched_said() {
+  local at="$DEVBIN_MANIFEST_REL"
+  [ -z "${2:-}" ] || at="$(manifest_path "$2")"
+  case "$1" in
+    empty) printf 'the manifest at %s records no files' "$at" ;;
+    *) printf 'there is no manifest at %s' "$at" ;;
+  esac
+}
+
+# _two_space_to_tab -- filter: `<sum>  <path>` lines to `<sum><TAB><path>`,
+# comments dropped.
+#
+# One implementation, because both the manifest FILE and the raw output of
+# sha256_files carry the same shape and both get read the same way. A path
+# containing spaces is rejoined rather than truncated at the first one.
+_two_space_to_tab() {
+  awk '/^#/ { next } NF >= 2 { p = $2; for (i = 3; i <= NF; i++) p = p " " $i; printf "%s\t%s\n", $1, p }'
+}
+
+# manifest_write <dstroot> <srcroot> <version> [preserve] [kind] -- checksum every
+# vendored file present in the target and write the manifest.
+#
+# Checksums the TARGET, not the source, so the manifest always describes what
+# devbin actually put there. Checksumming the source would record what should
+# have been copied, and a copy that silently failed would verify clean forever.
+#
+# `preserve` is a newline-separated list of paths whose EXISTING recorded
+# checksum is carried forward instead of being recomputed. Upgrade passes the
+# files it refused to overwrite, and without it the tool launders the very edits
+# it just declined to touch: refuse to replace a modified file, then re-checksum
+# it, and the modification is now the recorded truth. `doctor` said "26 files
+# intact" one line after `upgrade` said "edited in place", which is a false
+# green produced by two correct-looking steps in sequence.
+#
+# A FILE IT CANNOT READ REFUSES THE WRITE, and the manifest on disk is left as
+# it was (issue 0144). The checksums are taken with their status before the
+# redirect below truncates the file; they were taken inside the heredoc at the
+# foot of the block, where a file the tool could not read was one row fewer at
+# rc 0. A manifest short of a file devbin ships is a narrower record that no
+# later run can see past: manifest_check walks its entries, so the file left
+# out is never checked again. Each caller refuses as early as its flow allows,
+# so this is the last line rather than the only one.
+manifest_write() {
+  local dstroot="$1" srcroot="$2" version="$3" preserve="${4:-}" kind="${5:-}" managed="${6:-}" path rel sum old old_sum line ancestry paths sums token
+  path="$(manifest_path "$dstroot")"
+  # The shipped list, read with its status BEFORE the redirect below: inside
+  # the heredoc at the foot of the block a failed enumeration was a shorter
+  # manifest at rc 0 (issue 0127).
+  paths="$(vendored_paths "$srcroot")" || return 1
+  if ! sums="$(_sha256_of_set "$dstroot" "$paths")"; then
+    warn "refusing to write $path: devbin cannot read the file(s) named above, and a manifest short of a file devbin ships would never check that file again"
+    return 1
+  fi
+  # Read the old entries BEFORE the redirect below truncates the file. None
+  # when there is no manifest yet; one it cannot read refuses (issue 0144),
+  # since a preserved file's recorded checksum comes from it, and without it an
+  # edit upgrade just refused would be written down as canonical (issue 0021).
+  old=""
+  if [ -f "$path" ]; then
+    old="$(manifest_entries "$dstroot")" || {
+      warn "refusing to write $path: the manifest there cannot be read, and the checksums it records for preserved files would be lost"
+      return 1
+    }
+  fi
+  # And the old ancestry, for the same reason: it is computed FROM the header
+  # that redirect is about to destroy (issue 0059).
+  ancestry=""
+  if [ "$kind" = install ]; then ancestry="$(install_ancestry "$dstroot" "$srcroot")"; fi
+  # The source's kind, read before the redirect below for the same reason, and
+  # said when it will not lead back to the tree it names (issue 0153).
+  token="$(manifest_source_token "$srcroot")" || return 1
+  [ "$kind" = install ] || source_token_note "$srcroot" "$token"
+  mkdir -p "$(dirname "$path")" || return 1
+  {
+    printf '# devbin manifest -- written by: devbin install. Read by: devbin upgrade, devbin doctor.\n'
+    printf '# Every line below is a file devbin owns. An edit to one is DETECTED, not overwritten.\n'
+    printf '# Files not listed here -- config.yaml, cmd/, help/ -- belong to the project.\n'
+    printf '# devbin_version: %s\n' "$version"
+    # `kind` is written ONLY for an install tree, and its absence is what marks a
+    # project. An install is otherwise distinguished from a project by which
+    # files are MISSING -- no config.yaml, no cmd/ -- and a reader who has to infer
+    # a kind from an absence is a reader who will eventually infer it wrongly.
+    #
+    # An `if` rather than `[ -n "$kind" ] && printf`, for the reason 0052 gave:
+    # SC2015 on that form is what CI flags. It is NOT because the `&&` breaks
+    # under `set -e` -- that was asserted here first and the experiment refuted
+    # it, since a non-final command in an AND-list is exempt. The note stays
+    # because a comment claiming a break that does not happen is the defect this
+    # project catalogues.
+    if [ -n "$kind" ]; then printf '# kind: %s\n' "$kind"; fi
+    # An install also carries the keys every tool's install manifest carries,
+    # under the names docs/dev-opt-brew.md fixes (T3, issue 0213): `tool` and
+    # `version` beside devbin's own, and `managed_by` always, `devbin` for an
+    # install devbin wrote and `brew` for the keg the formula publishes (issue
+    # 0195), which install_managed_refusal reads. devbin_tree reads `tool` and
+    # `managed_by` to tell opt from brew.
+    if [ "$kind" = install ]; then
+      printf '# tool: devbin\n'
+      printf '# version: %s\n' "$version"
+      printf '# managed_by: %s\n' "${managed:-devbin}"
+    fi
+    # The KIND of source, never its place -- see manifest_source (issue 0153).
+    printf '# source: %s\n' "$token"
+    printf '# source_commit: %s\n' "$(source_commit_of "$srcroot")"
+    # An install only: see install_ancestry. A consumer never writes one, because
+    # a consumer has no history to vouch for -- it received a commit, it did not
+    # publish one.
+    while IFS= read -r line; do
+      [ -n "$line" ] && printf '# ancestry: %s\n' "$line"
+    done <<EOF
+$ancestry
+EOF
+    # Retabbed by _sha256_of_set through the filter manifest_entries uses, so
+    # this file has ONE parser for its own line format rather than a second one
+    # written inline -- and a path containing a space survives both.
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      sum="${line%%	*}"
+      rel="${line#*	}"
+      # A preserved path keeps its RECORDED checksum, not the one just computed
+      # off disk -- see the note above about laundering.
+      if list_contains "$preserve" "$rel"; then
+        old_sum="$(_manifest_sum_in "$old" "$rel")"
+        # A PATH SHIPPED UNDER A NEW CASE was recorded under the old one (issue
+        # 0140), so its checksum is there. Without it the edit upgrade has just
+        # refused to overwrite would be written down as canonical.
+        [ -n "$old_sum" ] || old_sum="$(_manifest_sum_case "$old" "$rel")"
+        [ -n "$old_sum" ] && sum="$old_sum"
+      fi
+      printf '%s  %s\n' "$sum" "$rel"
+    done <<EOF
+$sums
+EOF
+  } >"$path" || return 1
+  return 0
+}
+
+# _sha256_of_set <root> <rels> -- `<sum><TAB><rel>` for each path that EXISTS
+# under <root> and that the checksum tool READ, in one process, with the paths
+# still relative. Returns 1, naming each on stderr, when a path it found there
+# has no row.
+#
+# Run from inside <root> so the tool prints the relative path back verbatim and
+# nothing has to be stripped off the front -- which is also what keeps a
+# manifest identical on two machines with different checkout locations.
+#
+# A FILE THE TOOL COULD NOT READ IS A FAILURE, NOT A SHORTER SET (issue 0144).
+# This ran the tool and then `return 0`, so a file it could not read came back
+# one row short at rc 0. The manifest writer wrote its record short of the file
+# and the install exited 0: measured, an install under a umask that strips the
+# owner's read bit wrote a manifest of no rows at all, and with the files made
+# readable doctor passed `0 vendored files intact`. vendor_states compared two
+# empty sums for a file unreadable on both sides and called it level. And under
+# the handlers' errexit the same failure ended doctor, vendor and upgrade at
+# their first checksum pass, with the tool's line the only word. 0127 recorded
+# the gap and left it, because each caller had to decide first what a failure
+# here means to it.
+#
+# THE ROWS ARE THE ANSWER, NOT THE TOOL'S STATUS, AND THAT IS THE CHANNEL. The
+# tool's status covers the whole batch and names nothing a caller can act on; a
+# present path with no row is exactly a file that was not read, for whatever
+# reason. So a caller deciding per path reads the rows back through _set_sum,
+# where a file that is there and has no row is unreadable, and never asks
+# `[ -r ]`: that is access(2)'s answer to a different question, and it says yes
+# to a file the tool then fails on -- an I/O error, a sandbox, a file replaced
+# mid-run. A caller that needs only to know the whole set was read takes the
+# status, and each file is already named here, once per pass, beside the tool's
+# own line, which says why.
+#
+# THE ROWS COME OUT IN THE TAB FORM every caller reads, through the one parser,
+# so a caller takes this function's status from a plain assignment. Each call
+# site used to pipe it into the parser, and a pipeline hands its status to the
+# parser unless pipefail happens to be set.
+_sha256_of_set() {
+  local root="$1" rels="$2" rel raw rows line bad=0
+  local -a args
+  # Keyed by path: bash >= 5 is the floor (issue 0022), and a lookup per path
+  # keeps each check one pass however long the set grows. A path given twice
+  # is read and named once -- upgrade asks for what it ships and what its
+  # manifest records together, and the two lists are nearly the same.
+  local -A given=() read_ok=()
+  args=()
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    [ -z "${given[$rel]:-}" ] || continue
+    given[$rel]=1
+    [ -f "$root/$rel" ] || continue
+    args[${#args[@]}]="$rel"
+  done <<EOF
+$rels
+EOF
+  # Guarded expansion: bash 3.2 aborted on an empty array under `set -u` (bash
+  # 3.2 support since dropped by issue 0022 -- idiom kept as harmless).
+  [ "${#args[@]}" -gt 0 ] || return 0
+  # The tool's status is not read, and not lost: every path it failed on has no
+  # row, and the loop below names each one and sets this function's status.
+  # Taken here, under errexit, it would end the caller before any was named.
+  raw="$(cd "$root" && sha256_files "${args[@]+"${args[@]}"}")" || true
+  rows="$(printf '%s\n' "$raw" | _two_space_to_tab)"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    read_ok["${line#*	}"]=1
+  done <<<"$rows"
+  for rel in "${args[@]}"; do
+    [ -z "${read_ok[$rel]:-}" ] || continue
+    warn "cannot read $root/$rel, so it has no checksum"
+    bad=1
+  done
+  [ -z "$rows" ] || printf '%s\n' "$rows"
+  return "$bad"
+}
+
+# _set_sum <sums> <rel> -- <rel>'s checksum in <sums>, which _sha256_of_set
+# printed; rc 1 having printed nothing when it holds none (issue 0144).
+#
+# FOR A FILE ITS CALLER HAS FOUND ON DISK, rc 1 IS UNREADABLE: _sha256_of_set
+# leaves out the row of exactly the files the tool could not read. Every caller
+# deciding per path asks here, so none reads a missing row as an empty checksum
+# -- which is how two unreadable copies compared equal and read as level.
+_set_sum() { _tab_lookup "$1" "$2"; }
+
+# source_readable <srcroot> <paths> -- rc 0 when every file <paths> names can be
+# read in the SOURCE; otherwise rc 1, each that cannot named on stderr.
+#
+# ASKED BEFORE A COPY LOOP STARTS, NOT LEARNED FROM cp PARTWAY THROUGH ONE (issue
+# 0144). The loops copy in path order and stop at the first file they cannot
+# copy, so a source file nobody can read left every file before it replaced
+# under the manifest that was there. Measured through upgrade, whose own check
+# is in lib/cmd/upgrade because it needs the rows as well: one file replaced
+# under the old manifest, which doctor then called edited in place. Asked of
+# _sha256_of_set, the one place that decides unreadable, for one checksum pass
+# over the source.
+source_readable() {
+  _sha256_of_set "$1" "$(_source_rels "$1" "$2")" >/dev/null
+}
+
+# list_contains <newline-list> <item> -- membership in a newline-separated list.
+#
+# Public rather than file-private because upgrade needs the same test for a
+# different list, and two spellings of "is this path in that set" is how the two
+# ends of the same decision come to disagree.
+list_contains() {
+  local line
+  while IFS= read -r line; do
+    [ "$line" = "$2" ] && return 0
+  done <<EOF
+$1
+EOF
+  return 1
+}
+
+# case_twin <list> <root> <rel> -- the path in <list> that is <rel> on this disk
+# under another spelling: equal to it ignoring case, and the same file (-ef).
+# Prints that path and succeeds; fails when there is none, as there never is on
+# a case-sensitive disk, where two spellings are two files.
+#
+# A CASE-ONLY RENAME IN devbin's lib/ (Foo to foo) IS ONE FILE ON A
+# CASE-INSENSITIVE DISK -- APFS, as macOS formats it by default. The new
+# spelling is written into the old entry, and find goes on listing the old one.
+# Compared byte for byte, the old spelling looked retired, and every removal
+# deleted the file it had just shipped, at rc 0, reporting the old spelling
+# removed: publish from the install, install --force and upgrade from a project
+# (review of issue 0123; upgrade's is issue 0140).
+case_twin() {
+  local list="$1" root="$2" rel="$3" s
+  while IFS= read -r s; do
+    [ -n "$s" ] && [ "$s" != "$rel" ] || continue
+    [ "${s,,}" = "${rel,,}" ] || continue
+    [ "$root/$s" -ef "$root/$rel" ] || continue
+    printf '%s\n' "$s"
+    return 0
+  done <<<"$list"
+  return 1
+}
+
+# keep_case_twin <shipped> <root> <rel> -- when <rel>, which <shipped> does not
+# name, is on this disk a path <shipped> does name (case_twin), give it the
+# shipped spelling, say so, and succeed: the caller must not remove it. Fails
+# when there is no such path, and the caller may remove <rel>.
+#
+# ONE RENAME FIRST, WHICH IS ATOMIC, so the entry is never under a third
+# spelling. Its status is not trusted: POSIX lets rename() of one name onto
+# another name for the same file succeed and do nothing, and some systems' mv
+# refuse it outright, so what the directory LISTS afterwards is the check, and
+# that first attempt's refusal is expected and left to the fallback to report.
+# The fallback is two steps through a name mktemp makes unique in the
+# directory, each checked, the file going back under its old name if the
+# second fails.
+#
+# EVERY mv HERE IS `mv -f --`, the form helpers.bats's mv arm drove safe: a bare
+# mv prompts on a terminal over a destination it cannot write, and blocks there.
+# rename_staged is not used because on a failure it removes what it was
+# renaming, which here is the only copy. The mv lines are in that arm's list.
+keep_case_twin() {
+  local shipped="$1" root="$2" rel="$3" to dir base tmp
+  to="$(case_twin "$shipped" "$root" "$rel")" || return 1
+  dir="$root/${to%/*}"
+  base="${to##*/}"
+  mv -f -- "$root/$rel" "$root/$to" 2>/dev/null || :
+  if ! _listed_as "$dir" "$base" && tmp="$(mktemp "$root/$rel.case.XXXXXX")"; then
+    if mv -f -- "$root/$rel" "$tmp"; then
+      mv -f -- "$tmp" "$root/$to" || mv -f -- "$tmp" "$root/$rel" || warn "could not put $rel back: it is at $tmp"
+    else
+      rm -f -- "$tmp"
+    fi
+  fi
+  if _listed_as "$dir" "$base"; then
+    warn "kept $rel as $to: on this disk they are one file, which devbin ships under that spelling"
+  else
+    warn "kept $rel: on this disk it is $to, which devbin ships, and it could not be renamed to that spelling"
+  fi
+  return 0
+}
+
+# _listed_as <dir> <name> -- <dir>'s listing holds <name>, spelled exactly as
+# given. A test of the name, not of the file: on a disk that folds case `-e`
+# answers yes for every spelling.
+_listed_as() {
+  (
+    shopt -s nullglob dotglob
+    for e in "$1"/*; do
+      [ "${e##*/}" = "$2" ] && exit 0
+    done
+    exit 1
+  )
+}
+
+# _tab_lookup <lines> <key> -- field one of the `<field1><TAB><key>` line, or
+# return 1 having printed nothing.
+#
+# ONE loop for what was three. A recorded checksum, a manifest state and
+# upgrade's per-path verdict are the same question asked of the same line shape,
+# and they were three spellings of it in two files -- the exact drift the header
+# of this file warns about, in miniature. The named questions below are
+# wrappers, because `_tab_lookup "$states" "$rel"` at a call site reads as a
+# mistake even when it is right.
+_tab_lookup() {
+  local line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if [ "${line#*	}" = "$2" ]; then
+      printf '%s\n' "${line%%	*}"
+      return 0
+    fi
+  done <<EOF
+$1
+EOF
+  return 1
+}
+
+# _manifest_sum_case <entries> <rel> -- the recorded checksum of the entry that
+# is <rel> ignoring case, or empty (issue 0140). Asked only for a preserved path
+# with no entry of its own, which upgrade refused to overwrite because its case
+# twin was recorded as edited, and on the one disk where that twin exists (it
+# needs -ef) the manifest cannot hold two spellings of it.
+_manifest_sum_case() {
+  local line p
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    p="${line#*	}"
+    if [ "${p,,}" = "${2,,}" ]; then
+      printf '%s\n' "${line%%	*}"
+      return 0
+    fi
+  done <<<"$1"
+  return 0
+}
+
+# _manifest_sum_in <entries> <rel> -- the recorded checksum, or empty.
+_manifest_sum_in() { _tab_lookup "$1" "$2" || true; }
+
+# manifest_state_of <states> <rel> -- the manifest verdict for one path, or `new`.
+#
+# `new` rather than an error: a file the source ships and the manifest has never
+# heard of is what a devbin that GREW a file looks like from the target's side.
+manifest_state_of() { _tab_lookup "$1" "$2" || printf 'new\n'; }
+
+# manifest_check <root> -- one `<state><TAB><relpath>` line per manifest entry.
+#
+#   ok          on disk and matching the recorded checksum
+#   modified    on disk and DIFFERENT -- edited in place since install
+#   missing     recorded and gone
+#   unreadable  on disk and cannot be read, so neither ok nor modified holds
+#
+# The states upgrade and doctor both need, computed once here rather than
+# twice with two spellings of "different". Returns 0 whatever it finds: it is a
+# reporter, and its callers decide what a `modified` means to them. The one
+# exception is the manifest itself: one that is there and cannot be read
+# returns 1, naming it and printing no state (issue 0144), since it has no
+# entries to be in any state -- it read as none, and doctor passed that.
+#
+# UNREADABLE IS A STATE OF ITS OWN (issue 0144). An entry the checksum could
+# not read came back with no sum and read as `modified`: loud, and naming a
+# fault nobody committed. And `modified` is a verdict callers act on -- upgrade
+# --force replaces an edit -- where a file devbin cannot read supports no
+# verdict at all.
+manifest_check() {
+  local root="$1" entries="" sums line sum rel now
+  if [ -f "$(manifest_path "$root")" ]; then
+    entries="$(manifest_entries "$root")" || return 1
+  fi
+  # One checksum pass over everything present, then a pure-bash comparison. The
+  # per-file form cost a fork each and made the manifest half the wall clock of
+  # a test suite that installs a fixture per test.
+  #
+  # The pass's status is not read here, and that is the design rather than a
+  # swallow: a reporter that stopped on it would end doctor the way issue 0120
+  # did, and each entry it could not read is reported below by name, which is
+  # everything the status says and which file.
+  sums="$(_sha256_of_set "$root" "$(printf '%s\n' "$entries" | cut -f2)")" || true
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    sum="${line%%	*}"
+    rel="${line#*	}"
+    if [ ! -f "$root/$rel" ]; then
+      printf 'missing\t%s\n' "$rel"
+      continue
+    fi
+    if ! now="$(_set_sum "$sums" "$rel")"; then
+      printf 'unreadable\t%s\n' "$rel"
+      continue
+    fi
+    if [ "$now" = "$sum" ]; then
+      printf 'ok\t%s\n' "$rel"
+    else
+      printf 'modified\t%s\n' "$rel"
+    fi
+  done <<EOF
+$entries
+EOF
+  return 0
+}
+
+# install_ancestry <install> <checkout> -- the `<sha> <direction>` table a publish
+# from <checkout> writes into <install>'s manifest, one line per commit.
+#
+# EVERY COMMIT THE INSTALL HAS HELD, placed against the commit it is about to
+# hold. The commits are the ones already in its table plus the one it holds now;
+# the directions are RECOMPUTED from git on every publish, never carried, because
+# a direction is relative to a head and the head is what a publish moves. Only
+# the list of commits is carried. So a rewind is seen however many publishes
+# later it happens, and a direction is never older than the install.
+#
+# AND EVERY COMMIT THE CHECKOUT'S HEAD CONTAINS, as `forward` (issue 0195). A
+# Homebrew keg is a new install at every version, so a table carried from
+# earlier publishes was always empty there, and every project vendored from the
+# previous release read the next one as `differs` rather than as an update. The
+# whole history is one listing (commit_ancestors), so a consumer at any commit
+# the checkout contains is placed: every release tag, and every commit a
+# checkout install was ever cut at. The commits it does not contain -- a
+# rewind's, another clone's -- are still placed one at a time.
+#
+# The new head itself is left out: it is `same`, and source_commit already says
+# so. A commit this checkout does not have -- a publish from a different clone --
+# is kept as `unknown`, so a later publish from a checkout that has it can still
+# place it.
+#
+# ITS LIMITS, DECLARED BECAUSE THE PARAGRAPHS ABOVE WOULD OTHERWISE OVERCLAIM.
+# A commit the checkout's HEAD does not contain is known only once the install
+# has held it, so one held before the table began is not in it. And a publish
+# runs the CHECKOUT's own lib, so rewinding the checkout
+# to a commit from before 0059 rewinds the publisher too, and that publish writes
+# no table at all -- the history carried until then is gone, and every consumer
+# reads `unknown`. upgrade says so out loud when the bytes would change
+# (lib/cmd/upgrade).
+install_ancestry() {
+  local install="$1" checkout="$2" head sha anc
+  local -A reach=() seen=()
+  head="$(git -C "$checkout" rev-parse HEAD 2>/dev/null)" || head=""
+  anc="$(commit_ancestors "$checkout")"
+  while IFS= read -r sha; do
+    [ -z "$sha" ] || reach["$sha"]=1
+  done <<<"$anc"
+  while IFS= read -r sha; do
+    is_commit_sha "$sha" || continue
+    [ "$sha" = "$head" ] && continue
+    [ -z "${seen[$sha]:-}" ] || continue
+    seen["$sha"]=1
+    if [ -n "${reach[$sha]:-}" ]; then
+      printf '%s forward\n' "$sha"
+    else
+      printf '%s %s\n' "$sha" "$(commit_direction "$checkout" "$sha")"
+    fi
+  done <<EOF
+$(manifest_ancestry "$install" | cut -f1)
+$({ manifest_source_commit "$install" 2>/dev/null || true; } | awk '{ print $1 }')
+$anc
+EOF
+  return 0
+}
+
+# vendor_states <dstroot> <srcroot> -- one `<state><TAB><relpath>` line per file
+# on either side of the comparison.
+#
+# THE CROSS PRODUCT OF THE TWO COMPARISONS DEVBIN ALREADY MADE SEPARATELY, and
+# that is the whole contribution. `manifest_check` asks tree-vs-INSTALL-TIME; a
+# checksum against the source asks tree-vs-SOURCE. Neither alone can tell a file
+# somebody edited here from one the source has simply moved past, because each
+# is blind to the axis the other measures:
+#
+#                 source equal    source differs    source absent
+#   ok            level           behind            orphaned
+#   modified      CONVERGED       patched           released
+#   missing       absent          absent            --
+#
+# The cell in capitals is why this is worth a function rather than two greps. A
+# file edited here whose edit has since been UPSTREAMED matches the canonical
+# bytes exactly while the manifest still records the pre-patch checksum -- so
+# doctor calls it edited forever and upgrade has nothing left to replace. That
+# is the carry doctrine working as designed, and it looked like damage.
+#
+# AND A FILE EITHER SIDE CANNOT READ IS `unreadable`, IN EVERY CELL (issue
+# 0144). Its sums were empty strings, so a file unreadable on both sides
+# compared equal and read as level -- a false green -- and one unreadable on
+# one side read as behind or patched, a verdict about bytes nobody read.
+# Without both sums there is no cell to be in.
+#
+# AN INSTALL WITH NO MANIFEST HAS NO ROW TO BE IN, AND IS rc 1, NAMED (issue
+# 0146). Every file read as `new`, so one matching the source was `level` and
+# an edit `behind`: the rows claim to know which files were edited here, and
+# with no manifest nobody does. seam_is_level fails closed on it. So does one
+# whose manifest records no files (issue 0159): every file read as `new` there
+# too, through a manifest that is present.
+#
+# Reports and never writes. The manifest is the evidence for half of what is
+# being reported, so restamping it here would destroy the finding in the act of
+# printing it -- the same defect the refusing upgrade once had.
+vendor_states() {
+  local dstroot="$1" srcroot="$2" paths states dst_sums src_sums have
+  local rel abs src_rel state sum_src sum_dst line unvouched
+  paths="$(vendored_paths "$srcroot")" || return 1
+  if unvouched="$(manifest_unvouched "$dstroot")"; then
+    warn "$(manifest_unvouched_said "$unvouched" "$dstroot"), so which vendored files were edited there cannot be told"
+    return 1
+  fi
+  states="$(manifest_check "$dstroot")" || return 1
+
+  # ONE checksum process per side, then pure-bash lookups -- the shape
+  # manifest_check uses, and for its reason: the per-file form cost a fork each
+  # and made the manifest half the wall clock of a suite that installs a fixture
+  # per test. Neither status is read, as in manifest_check: the loop below
+  # reports each file with no row by name.
+  dst_sums="$(_sha256_of_set "$dstroot" "$paths")" || true
+  src_sums="$(_sha256_of_set "$srcroot" "$(_source_rels "$srcroot" "$paths")")" || true
+
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    abs="$(vendor_source_path "$srcroot" "$rel")" || continue
+    src_rel="${abs#"$srcroot"/}"
+    # The source's copy first: upgrade cannot add or replace a file from a copy
+    # it cannot read, so a path absent here is unreadable too, not absent.
+    if ! sum_src="$(_set_sum "$src_sums" "$src_rel")"; then
+      printf 'unreadable\t%s\n' "$rel"
+      continue
+    fi
+    if [ ! -f "$dstroot/$rel" ]; then
+      printf 'absent\t%s\n' "$rel"
+      continue
+    fi
+    if ! sum_dst="$(_set_sum "$dst_sums" "$rel")"; then
+      printf 'unreadable\t%s\n' "$rel"
+      continue
+    fi
+    state="$(manifest_state_of "$states" "$rel")"
+    if [ "$sum_src" = "$sum_dst" ]; then
+      case "$state" in
+        modified) printf 'converged\t%s\n' "$rel" ;;
+        *) printf 'level\t%s\n' "$rel" ;;
+      esac
+    else
+      case "$state" in
+        modified) printf 'patched\t%s\n' "$rel" ;;
+        *) printf 'behind\t%s\n' "$rel" ;;
+      esac
+    fi
+  done <<EOF
+$paths
+EOF
+
+  # A path the manifest records that the source no longer ships. Upgrade's own
+  # two answers, named the same way it names them: it REMOVES an intact orphan
+  # and RELEASES an edited one, and a reader deciding whether to run it needs to
+  # know which of those is waiting.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    state="${line%%	*}"
+    rel="${line#*	}"
+    list_contains "$paths" "$rel" && continue
+    case "$state" in
+      missing) continue ;;
+      # Neither removed as intact nor released as edited: upgrade can tell
+      # which only by reading it, and refuses to run until it can.
+      unreadable) printf 'unreadable\t%s\n' "$rel" ;;
+      modified) printf 'released\t%s\n' "$rel" ;;
+      *) printf 'orphaned\t%s\n' "$rel" ;;
+    esac
+  done <<EOF
+$states
+EOF
+
+  # On devbin's side of the seam and owned by nobody: not shipped by the source,
+  # not recorded by the manifest. Upgrade never removes it -- it is not in the
+  # source list -- so without a line here the report's file list would not add
+  # up to what is actually on disk. The inventory is read with its status
+  # first, as the shipped list is above (issue 0127).
+  have="$(vendored_dir_files "$dstroot")" || return 1
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    list_contains "$paths" "$rel" && continue
+    [ "$(manifest_state_of "$states" "$rel")" = new ] || continue
+    printf 'unlisted\t%s\n' "$rel"
+  done <<<"$have"
+  return 0
+}
+
+# seam_is_level <dstroot> <srcroot> -- rc 0 when NO vendored byte would change.
+#
+# THE QUESTION `source_direction` CANNOT ANSWER, and issue 0053 is what happens
+# when the two are confused. `source_direction` compares COMMITS; this compares
+# BYTES. A source can be behind in commit order and byte-identical under the
+# seam -- two commits that touched only documentation put every consumer in
+# exactly that state -- and `upgrade` was warning `will REVERT the runtime`
+# about it, four lines before its own summary said `No vendored file differs`.
+#
+# FAILS CLOSED, DELIBERATELY. An unreadable comparison returns "not level", so
+# the caller keeps its warning. The opposite default would silence a real
+# revert warning whenever the check itself broke, which is the one direction
+# that costs something.
+#
+# `converged` counts as level: the bytes match the source exactly, and it is
+# only the manifest that still records the pre-patch checksum. `unlisted` too --
+# it is on devbin's side of the seam, owned by nobody, and upgrade never
+# touches it. Every other state means a file moves, except `unreadable`, which
+# means nobody can say whether one does -- and so, closed (issue 0144).
+#
+# Costs two checksum passes over the vendored set. Called only where the answer
+# changes what is printed: the backward and unrelated arms of upgrade's notice,
+# and a forward move in devbin_source_state (lib/helpers), where a move that
+# changes no vendored byte is not called an update (issue 0224).
+seam_is_level() {
+  local dstroot="$1" srcroot="$2" states line state
+  states="$(vendor_states "$dstroot" "$srcroot")" || return 1
+  [ -n "$states" ] || return 1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    state="${line%%	*}"
+    case "$state" in
+      level | converged | unlisted) ;;
+      *) return 1 ;;
+    esac
+  done <<EOF
+$states
+EOF
+  return 0
+}
+
+# _source_rels <srcroot> <paths> -- the same file list, spelled the way it is
+# spelled INSIDE the source, so one batch checksum can be taken from that root.
+#
+# Not the identity: a source checkout keeps its runtime at `lib/` and an
+# installed project at `bin/.devbin/lib/`, and both are legal sources.
+_source_rels() {
+  local srcroot="$1" paths="$2" rel abs
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    abs="$(vendor_source_path "$srcroot" "$rel")" || continue
+    printf '%s\n' "${abs#"$srcroot"/}"
+  done <<EOF
+$paths
+EOF
+  return 0
+}
+
+# devbin_version_of <root> -- which devbin a tree carries.
+#
+# Two cases, told apart by whether the runtime is vendored. INSTALLED: the
+# manifest header, stamped by the devbin that did the installing -- the tree's
+# own VERSION is that PROJECT's version and says nothing about the framework. A
+# source CHECKOUT: its VERSION, which is devbin's, because devbin is the
+# project there.
+#
+# The alternative -- a `lib/VERSION` stamped into the vendored copy -- would put
+# devbin's version in two files in the source repo, which is the drift that one
+# source per fact rules out. This costs one branch and no new file.
+#
+# AN INSTALL WHOSE MANIFEST CANNOT BE READ IS `unknown`, NEVER ITS VERSION FILE
+# (issue 0144). The header read failed quietly and fell through to
+# the PROJECT's VERSION, so doctor passed `runtime` and `devbin_version` on the
+# project's own number. Asked only on that fallback, so the ordinary path costs
+# nothing; the manifest is named by the caller that reads it whole.
+#
+# AND SO IS AN INSTALL WITH NO MANIFEST AT ALL (issue 0146): the same fall-
+# through, measured, passed runtime and devbin_version on the project's VERSION
+# beside doctor's own FAIL for the missing manifest.
+#
+# AND SO, WHATEVER THE REASON, IS ANY INSTALL WHOSE MANIFEST NAMES NO VERSION
+# (issue 0159). The fall-through was guarded case by case, and the cases left
+# out fell through still: a manifest cut to nothing, or a header without its
+# devbin_version line, passed runtime and devbin_version on the project's own
+# number beside doctor's FAIL for a manifest that records no files. An install's
+# version is its manifest's or unknown, which is runtime_version's rule too.
+devbin_version_of() {
+  local root="$1" v=""
+  if is_devbin_installed "$root"; then
+    v="$(manifest_version "$root" 2>/dev/null)" || v=""
+    printf '%s\n' "${v:-unknown}"
+    return 0
+  fi
+  read_version "$root/VERSION" version-file
+}
+
+# devbin_runtime_version -- which devbin is RUNNING right now.
+#
+# One call, not a second implementation: `is_devbin_installed $PROJECT_ROOT` and
+# the dispatcher's `DEVBIN_LIB = $DEVBIN_DIR/lib` are the same question, because
+# the dispatcher picks the vendored lib exactly when it exists.
+devbin_runtime_version() { devbin_version_of "${PROJECT_ROOT:-.}"; }
+
+# version_satisfies <version> <constraint> -- does <version> meet the config's
+# `devbin_version:` declaration?
+#
+# The forms, which are all the config subset needs:
+#
+#   ^X.Y.Z   same major, and at least X.Y.Z          (the usual)
+#   >=X.Y.Z  at least X.Y.Z, any major
+#   X.Y.Z    exactly
+#
+# A caret on 0.x is treated the way semver's own text does NOT -- ^0.4.0 admits
+# 0.5.0 here. (The example deliberately names a version devbin is not: an
+# example that happens to equal the current VERSION reads as a claim about it.)
+# Pre-1.0 devbin has no stability promise to encode either way, and the
+# alternative pins every project to a patch series and makes `upgrade` a lie.
+version_satisfies() {
+  local v="$1" c="${2:-}" vmaj vmin vpat cmaj cmin cpat op="^" n
+  # No constraint declared is satisfied by anything. Written the other way round
+  # first, which made every declared constraint return 0 before it was read --
+  # a check that passes without checking, three days after AC-04.13 said so.
+  [ -z "$c" ] && return 0
+  case "$c" in
+    "^"*) op="^" c="${c#^}" ;;
+    ">="*) op=">=" c="${c#>=}" ;;
+    *) op="=" ;;
+  esac
+  IFS='.' read -r vmaj vmin vpat <<EOF
+$v
+EOF
+  IFS='.' read -r cmaj cmin cpat <<EOF
+$c
+EOF
+  # Each part checked SEPARATELY, not as one concatenation: `0.1` splits to an
+  # empty patch, and an empty field vanishes into the joined string while still
+  # blowing up `[ "" -ge 0 ]` further down. An unparseable version -- `unknown`,
+  # what read_version returns when it finds nothing -- fails here, which is the
+  # answer doctor wants.
+  for n in "$vmaj" "$vmin" "$vpat" "$cmaj" "$cmin" "$cpat"; do
+    case "$n" in '' | *[!0-9]*) return 1 ;; esac
+  done
+  case "$op" in
+    "=") [ "$v" = "$c" ] && return 0 ;;
+    "^")
+      [ "$vmaj" -eq "$cmaj" ] || return 1
+      [ "$vmin" -gt "$cmin" ] && return 0
+      [ "$vmin" -eq "$cmin" ] && [ "$vpat" -ge "$cpat" ] && return 0
+      ;;
+    ">=")
+      [ "$vmaj" -gt "$cmaj" ] && return 0
+      [ "$vmaj" -lt "$cmaj" ] && return 1
+      [ "$vmin" -gt "$cmin" ] && return 0
+      [ "$vmin" -lt "$cmin" ] && return 1
+      [ "$vpat" -ge "$cpat" ] && return 0
+      ;;
+  esac
+  return 1
+}

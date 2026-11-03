@@ -1,0 +1,1609 @@
+#!/usr/bin/env bash
+#
+# lib/config -- the devbin configuration reader.
+#
+# Sourced, not executed: defines functions and sets no shell options (the
+# dispatcher owns those).
+#
+# ONE reader, no yq. The parse is a single awk pass that flattens
+# the document into `path<TAB>value` lines; every subsequent lookup is pure bash
+# over that cached text. A whole dispatch therefore costs one fork, not one per
+# key -- which matters for a launcher that sits in front of every command a
+# developer runs all day.
+#
+# The accepted grammar is a RESTRICTED SUBSET of YAML, and input outside it is
+# rejected with the file and line rather than silently misread. That refusal is
+# the design, not a limitation: it keeps every project's config readable in the
+# same shape, and a config language nobody can surprise you in is worth more
+# than one that accepts anchors.
+#
+#   Supported            two-space indent, nested maps, `key: value`,
+#                        scalar sequences (`- item`), `#` comments,
+#                        single/double quoted scalars, blank lines, `---`
+#   Rejected             tabs, odd or jumped indent, duplicate keys,
+#                        anchors/aliases (& *), block scalars (| >),
+#                        flow collections ({ [), sequences of maps,
+#                        a key nested under a key that has a value
+#
+# Public API:
+#   cfg_load <file>          parse + validate; caches into _DEVBIN_CFG
+#   cfg_get <path> [default] scalar at a dotted path, or default (or "")
+#   cfg_has <path>           true when the path has a value
+#   cfg_list <path>          immediate child keys under path, document order
+#   cfg_version_from         the version file: project.version_from, else VERSION
+#   cfg_validate             schema check of the loaded config (needs lib/helpers)
+#   cfg_release_get <key>    a release: scalar, or its default (ST0007)
+#   cfg_release_list <key>   a release: list, one item per line, or its default
+#   cfg_release_verbs        every verb `release` has, one per line (ST0008 WP-08)
+#   cfg_macos_get <key>      a macos: scalar, or its default (issue 0226)
+#   cfg_formula_get <key>    a formula: scalar, or its default (issue 0227)
+#   cfg_formula_list <key>   a formula: list, one item per line
+#   cfg_formula_name         the formula's name: formula.name, else project.name
+#   cfg_ident <v> [<n> <e>]  `Name <email>` as git writes an identity, split (issue 0239)
+#   cfg_dump                 the flattened form (debugging, doctor)
+#
+[ -n "${_DEVBIN_CONFIG_LOADED:-}" ] && return 0
+_DEVBIN_CONFIG_LOADED=1
+
+# The flattened document. Set by cfg_load, read by every accessor.
+_DEVBIN_CFG=""
+_DEVBIN_CFG_FILE=""
+
+# --- the flattener ---------------------------------------------------------
+#
+# Emits `path<TAB>value` for every scalar leaf. Map opens emit nothing: cfg_list
+# derives child keys from leaf paths, so an interior node needs no record of its
+# own. Sequence items are emitted with a numeric segment (`groups.0`), which
+# makes them addressable by cfg_get and countable by cfg_list under one rule.
+#
+# Errors go to stderr prefixed `config:` and exit 1, so a malformed config stops
+# the dispatcher rather than producing a config that is quietly half-read
+# (IN-AG-NO-SILENT-001).
+# Held in a variable rather than produced by a function: a `cat <<EOF` helper
+# would fork once per load, and the whole point of the single-pass design is
+# that a dispatch costs one fork total.
+IFS='' read -r -d '' _DEVBIN_CFG_AWK <<'AWK' || true
+function err(msg) {
+  printf("config: %s:%d: %s\n", FILENAME, NR, msg) > "/dev/stderr"
+  bad = 1
+  exit 1
+}
+# Strip an unquoted trailing comment. Quote state is tracked character by
+# character because a `#` inside a quoted scalar is data, not a comment.
+function strip_comment(s,   i, c, q, out) {
+  q = ""
+  for (i = 1; i <= length(s); i++) {
+    c = substr(s, i, 1)
+    if (q != "") {
+      if (c == q) q = ""
+    } else if (c == "\"" || c == "'") {
+      q = c
+    } else if (c == "#") {
+      if (i == 1 || substr(s, i - 1, 1) == " ") return substr(s, 1, i - 1)
+    }
+    out = out c
+  }
+  return out
+}
+function rtrim(s) { sub(/[ \t]+$/, "", s); return s }
+function ltrim(s) { sub(/^[ \t]+/, "", s); return s }
+function trim(s)  { return rtrim(ltrim(s)) }
+function unquote(s) {
+  if (s ~ /^".*"$/) return substr(s, 2, length(s) - 2)
+  if (s ~ /^'.*'$/) return substr(s, 2, length(s) - 2)
+  return s
+}
+function joinpath(upto,   i, p) {
+  p = ""
+  for (i = 0; i <= upto; i++) p = (p == "" ? key[i] : p "." key[i])
+  return p
+}
+BEGIN { maxlevel = -1 }
+{
+  line = $0
+  if (line ~ /\t/) err("tabs are not permitted; use two spaces per level")
+  line = strip_comment(line)
+  line = rtrim(line)
+  if (line ~ /^[ ]*$/) next
+  if (line == "---") next
+
+  # Indent must be an exact multiple of two, and may only ever step IN by one
+  # level at a time. A jump means the author lost track of the nesting, and
+  # guessing which level they meant is how a config gets silently misread.
+  match(line, /^ */)
+  indent = RLENGTH
+  if (indent % 2 != 0) err("indent must be a multiple of 2 spaces, got " indent)
+  level = indent / 2
+  if (level > maxlevel + 1) err("indent jumps from level " maxlevel " to " level)
+  # A LINE THAT CARRIED A VALUE HAS NOTHING UNDER IT (issue 0143). A key
+  # indented under one parsed to BOTH rows -- `dmarc: none` with `policy:
+  # reject` beneath it, and the reader that took the value never saw the key --
+  # and under a sequence item its path had an empty segment no accessor
+  # reaches. A sequence item under a scalar KEY keeps the refusal it already
+  # had, the duplicate-key one below, which names the same fault; one under a
+  # sequence ITEM has no such refusal, and flattened to `a..0`.
+  if (leafpath != "" && level > leaflevel && (leafseq || substr(line, indent + 1, 2) != "- ")) err("`" leafpath "` already has a value, so nothing can be nested under it")
+  leafpath = ""
+
+  body = substr(line, indent + 1)
+
+  if (body ~ /^&/ || body ~ /^\*/) err("anchors and aliases are not supported")
+
+  if (substr(body, 1, 2) == "- ") {
+    val = trim(substr(body, 3))
+    if (val ~ /:[ ]/ || val ~ /:$/) err("sequences of maps are not supported")
+    if (val ~ /^[|>]/) err("block scalars are not supported")
+    path = joinpath(level - 1)
+    if (path == "") err("a sequence must be under a key")
+    # A key that already carried a SCALAR cannot also take sequence items.
+    # `languages: flat` followed by `- elixir` used to flatten to both
+    # `languages` and `languages.0`, and only the schema check downstream
+    # caught it -- as `unknown key`, which describes neither the mistake nor
+    # where it is. Duplicates belong to the parser, which knows the line.
+    if (path in seen) err("duplicate key `" path "`: it already has a value")
+    idx = seq[path] + 0
+    seq[path] = idx + 1
+    full = path "." idx
+    printf("%s\t%s\n", full, unquote(val))
+    maxlevel = level
+    leafpath = full; leaflevel = level; leafseq = 1
+    next
+  }
+
+  ci = index(body, ":")
+  if (ci == 0) err("expected `key: value` or `- item`, got: " body)
+  k = trim(substr(body, 1, ci - 1))
+  v = trim(substr(body, ci + 1))
+  if (k == "") err("empty key")
+  if (k ~ /[^A-Za-z0-9_-]/) err("key `" k "` may contain only letters, digits, _ and -")
+
+  key[level] = k
+  # Dedent invalidates every deeper segment; clearing them stops a stale deeper
+  # key from being spliced into a later path.
+  for (i = level + 1; i <= maxlevel; i++) delete key[i]
+  maxlevel = level
+
+  full = joinpath(level)
+  if (v == "") {
+    # BOTH tables are consulted, in both branches. They were disjoint, so the
+    # same key could open a map here and carry a scalar below without either
+    # check firing -- the flattener emitted both and the schema rejected the
+    # survivor with a generic `unknown key`. One key, one shape, said here
+    # where the line number is.
+    if (full in opened || full in seen) err("duplicate key `" full "`")
+    opened[full] = 1
+    next
+  }
+  if (v ~ /^[|>]/) err("block scalars are not supported")
+  if (v ~ /^[\[{]/) err("flow collections are not supported; use block form")
+  # Checked on the VALUE, not just on the line start: `run: &base mix test`
+  # carries the anchor after the key, which is where anchors actually appear.
+  if (v ~ /^&/ || v ~ /^\*/) err("anchors and aliases are not supported")
+  if (full in seen || full in opened) err("duplicate key `" full "`")
+  seen[full] = 1
+  printf("%s\t%s\n", full, unquote(v))
+  leafpath = full; leaflevel = level; leafseq = 0
+}
+END { if (bad) exit 1 }
+AWK
+
+# _cfg_parse <file> -- one awk pass, flattened.
+#
+# Split out of cfg_load because the torn-read check below compares two of
+# them, and because a test can stub this to stage a race deterministically. A
+# race cannot be staged by timing without being flaky, and a flaky test for a
+# concurrency guard is worse than none -- it teaches people to re-run.
+_cfg_parse() {
+  awk "$_DEVBIN_CFG_AWK" "$1"
+}
+
+# cfg_load <file> -- parse and cache. Dies if the file is missing or malformed.
+#
+# READ TWICE, AND REFUSE A DISAGREEMENT. A config being rewritten IN PLACE while
+# this reads it yields a torn parse: not a parse error, because the torn state
+# can be perfectly valid YAML, but a wrong VALUE, which is then word-split into
+# a command line and executed.
+#
+# Measured (issue 0026). One `test all` ran while another
+# process edited config.yaml; the reader caught a transient state, the swift
+# arm's destination read `variant=Designed for iPad`, and xcodebuild died on
+# `Unknown build action 'for'`. Nothing was wrong with the config that landed or
+# with the harness -- the reader had simply observed a half-written file and
+# reported no such thing.
+#
+# Two passes is a sound detector rather than a heuristic. A writer that finished
+# before the first pass gives two identical reads, which is a consistent read. A
+# writer overlapping either pass changes the bytes between them, and the reads
+# disagree. The only miss is a writer tearing IDENTICALLY across both passes,
+# which is not a thing that happens.
+#
+# It does not make the read atomic and does not claim to -- it converts a silent
+# wrong value into a refusal, which is the No Silent Errors rule applied to a
+# race. Editors that write a temp file and rename need none of this: the reader
+# sees the old bytes or the new ones and never a mixture.
+#
+# The cost is one extra awk pass over a file of a few KB, on a launcher that
+# then runs a test suite. That is the right side of the trade.
+cfg_load() {
+  local file="$1" flat again
+  if [ ! -f "$file" ]; then
+    printf 'config: no such config file: %s\n' "$file" >&2
+    return 1
+  fi
+  flat="$(_cfg_parse "$file")" || return 1
+  again="$(_cfg_parse "$file")" || return 1
+  if [ "$flat" != "$again" ]; then
+    printf 'config: %s changed while it was being read -- refusing a torn parse.\n' "$file" >&2
+    printf 'config: something is writing that file now. A value read mid-write is\n' >&2
+    printf 'config: valid YAML with the wrong contents, and run: lines are executed.\n' >&2
+    printf 'config: re-run once the write has finished.\n' >&2
+    return 1
+  fi
+  _DEVBIN_CFG="$flat"
+  _DEVBIN_CFG_FILE="$file"
+  return 0
+}
+
+# cfg_load_string -- parse from stdin. Used by the tests and by `doctor --check`
+# so a config can be validated without being installed anywhere.
+#
+# FEED IT BY REDIRECTION, NEVER BY PIPE:
+#
+#   cfg_load_string <<'YAML'   # correct -- runs in this shell
+#   cfg_load_string <file      # correct
+#   printf '...' | cfg_load_string   # WRONG -- silently loses the cache
+#
+# The right-hand side of a pipe runs in a subshell, so the `_DEVBIN_CFG` it sets
+# dies with that subshell and every later cfg_get returns empty. Nothing errors;
+# the config simply reads as absent. Same reason cfg_load must not be wrapped in
+# a command substitution or BATS's `run`.
+cfg_load_string() {
+  local flat
+  flat="$(awk "$_DEVBIN_CFG_AWK" -)" || return 1
+  _DEVBIN_CFG="$flat"
+  _DEVBIN_CFG_FILE="<stdin>"
+  return 0
+}
+
+# --- accessors -------------------------------------------------------------
+#
+# Pure bash, no forks. `read` with IFS=tab splits each cached line into path and
+# value; the herestring form keeps the loop in THIS shell, so callers can rely
+# on the accessors having no side effects to lose.
+
+# cfg_get <path> [default]
+cfg_get() {
+  local want="$1" default="${2:-}" k v
+  while IFS=$'\t' read -r k v; do
+    if [ "$k" = "$want" ]; then
+      printf '%s\n' "$v"
+      return 0
+    fi
+  done <<EOF
+$_DEVBIN_CFG
+EOF
+  printf '%s\n' "$default"
+  return 0
+}
+
+# cfg_has <path> -- true when the path carries a value.
+cfg_has() {
+  local want="$1" k v
+  while IFS=$'\t' read -r k v; do
+    [ "$k" = "$want" ] && return 0
+  done <<EOF
+$_DEVBIN_CFG
+EOF
+  return 1
+}
+
+# cfg_list <path> -- immediate child keys under <path>, in document order,
+# de-duplicated. `cfg_list commands` gives the command names; `cfg_list ""`
+# gives the top-level keys. This is what makes the framework's synthesised `all`
+# possible: the option list is read, never hand-maintained.
+cfg_list() {
+  local prefix="$1" k v rest child seen_list=""
+  while IFS=$'\t' read -r k v; do
+    if [ -z "$prefix" ]; then
+      rest="$k"
+    else
+      case "$k" in
+        "$prefix".*) rest="${k#"$prefix".}" ;;
+        *) continue ;;
+      esac
+    fi
+    child="${rest%%.*}"
+    [ -n "$child" ] || continue
+    case " $seen_list " in
+      *" $child "*) continue ;;
+    esac
+    seen_list="$seen_list $child"
+    printf '%s\n' "$child"
+  done <<EOF
+$_DEVBIN_CFG
+EOF
+}
+
+# cfg_dump -- the flattened form, for doctor and for debugging a config that is
+# not behaving. Seeing the parse is usually enough to explain it.
+cfg_dump() {
+  printf '%s\n' "$_DEVBIN_CFG"
+}
+
+# cfg_version_from -- the version file: project.version_from, or VERSION where
+# it is not declared. THE ONE READING of the key and its default (issue 0259):
+# the dispatcher exports it as DEVBIN_VERSION_FILE for lib/helpers, which reads
+# no config, and doctor asks it of the config it loaded itself, so a verdict on
+# the version is never about a key nobody read.
+cfg_version_from() {
+  cfg_get project.version_from VERSION
+}
+
+# --- schema ----------------------------------------------------------------
+#
+# Validation splits the path into SEGMENTS and checks its structure. The obvious
+# alternative -- one glob per legal path, `commands.*.summary` and friends --
+# looks tidier and is wrong: a `*` in a case pattern spans dots, so
+# `commands.*.summary` also matches `commands.test.options.mix.summary`. Every
+# deeper pattern is then dead code, and paths of arbitrary depth
+# (`commands.a.options.b.c.d.summary`) validate clean. Shellcheck flags the dead
+# patterns (SC2221/SC2222), which is how this was caught.
+#
+# Unknown keys are an ERROR, not a warning. A misspelled `sumary:` that is
+# quietly ignored presents as "my help text does not appear" much later, in a
+# place that gives no hint about the typo.
+
+_cfg_is_index() {
+  case "$1" in
+    '' | *[!0-9]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# _cfg_path_known <path> -- true when the dotted path is a legal schema path.
+_cfg_path_known() {
+  local path="$1" n frow
+  local -a p
+  IFS='.' read -ra p <<<"$path"
+  n="${#p[@]}"
+  case "${p[0]}" in
+    devbin_version)
+      # Explicit return, like every other branch: a bare `[ "$n" -eq 1 ]` here
+      # would fall through to the `return 1` after the esac and reject the key
+      # even when the test passed.
+      [ "$n" -eq 1 ] && return 0
+      return 1
+      ;;
+    project)
+      if [ "$n" -eq 2 ]; then
+        # cli_task: the mix task the `cli` and `repl` built-ins call. Defaults
+        # to `<name>.cli`, which the projects devbin was folded from use;
+        # `demo_cli` and `demo_config` need it: their tasks are `demo.cli` and
+        # `demo.config`. `referent`: issue 0049's key, and it was READABLE BY
+        # THE RUNTIME AND UNKNOWN TO THE SCHEMA for two days -- the exact
+        # mismatch this validator exists to catch, occurring in the validator.
+        # `print_run_referent` reads it and prints it verbatim, so the feature
+        # worked perfectly while `devbin doctor` reported the consumer's correct
+        # config as an unknown key. **A gate that rejects the configuration its
+        # own runtime honours is worse than no gate**, because the failure names
+        # the project's file and the defect is here. Same shape as the
+        # `log`/`grammar` omission recorded above it: the feature landed, the
+        # allowlist did not follow. `cargo_root`: issue 0225's key, added in
+        # the same change as its reader, cargo_root (lib/helpers).
+        case "${p[1]}" in name | alias | cli_task | root_var | version_from | referent | cargo_root) return 0 ;; esac
+        return 1
+      fi
+      # project.languages.<N> -- drives which built-ins are active by default
+      # (the activation rule). Same axis as Intent's own config.json languages
+      # array.
+      [ "$n" -eq 3 ] && [ "${p[1]}" = languages ] && _cfg_is_index "${p[2]}" && return 0
+      # project.version_sidecars.<N> -- files that mirror the version (WP-17).
+      [ "$n" -eq 3 ] && [ "${p[1]}" = version_sidecars ] && _cfg_is_index "${p[2]}" && return 0
+      return 1
+      ;;
+    install)
+      # install.prefix -- where `devbin install` PUBLISHES to when run inside
+      # devbin's own source tree (ST0005). In a consumer it publishes
+      # nothing, and its one reader is `shell-init`, which bakes it into `dvb`
+      # as the machine-install fallback. This said the key was meaningless in a
+      # consumer until issue 0125 made shell-init read it, as the reference had
+      # promised all along.
+      #
+      # ADDED IN THE SAME CHANGE AS THE READER, deliberately. `project.referent`
+      # was readable by the runtime and unknown to this function for two days --
+      # the feature worked perfectly while `doctor` reported the consumer's
+      # correct config as an unknown key, which is recorded in the `project`
+      # branch above as the mismatch this validator exists to catch, occurring
+      # in the validator.
+      [ "$n" -eq 2 ] && [ "${p[1]}" = prefix ] && return 0
+      return 1
+      ;;
+    help)
+      if [ "$n" -eq 2 ]; then
+        case "${p[1]}" in preamble | tagline) return 0 ;; esac
+        return 1
+      fi
+      [ "$n" -eq 3 ] && [ "${p[1]}" = groups ] && _cfg_is_index "${p[2]}" && return 0
+      return 1
+      ;;
+    options)
+      if [ "$n" -eq 3 ]; then
+        # `summary` is the shared-options block in help (WP-07). Without it the
+        # corpus's `--env <dev|test|prod>  set MIX_ENV` line had nowhere to come
+        # from, and a flag parsed on every invocation was documented nowhere.
+        case "${p[2]}" in export | flag | value | summary) return 0 ;; esac
+        return 1
+      fi
+      [ "$n" -eq 4 ] && [ "${p[2]}" = values ] && _cfg_is_index "${p[3]}" && return 0
+      # options.<name>.commands.<N> -- the commands that READ a framework-owned
+      # option, extending devbin's own set (issue 0009). A project's `web`
+      # command reads DEVBIN_OPT_IEX and devbin cannot know that by looking.
+      # Note this is a sibling of `values`, not of the shape keys above: it says
+      # who consumes the option, never what shape it has.
+      [ "$n" -eq 4 ] && [ "${p[2]}" = commands ] && _cfg_is_index "${p[3]}" && return 0
+      return 1
+      ;;
+    release)
+      # ST0007's release: block. Its keys, shapes and defaults are ONE table,
+      # _DEVBIN_RELEASE_SCHEMA below, and this branch reads it rather than
+      # listing the keys a second time.
+      [ "$n" -ge 2 ] && _cfg_release_known "${path#release.}" && return 0
+      return 1
+      ;;
+    macos)
+      # Issue 0226's macos: block, the built-in macos's settings. Its keys and
+      # defaults are ONE table, _DEVBIN_MACOS_SCHEMA below, which this branch
+      # reads rather than listing the keys a second time.
+      [ "$n" -eq 2 ] && _cfg_macos_row "${p[1]}" >/dev/null && return 0
+      return 1
+      ;;
+    formula)
+      # Issue 0227's formula: block, the built-in formula's settings, ONE
+      # table, _DEVBIN_FORMULA_SCHEMA below: a scalar at formula.<key>, a list
+      # item at formula.<key>.<N>.
+      frow="$(_cfg_formula_row "${p[1]}")" || return 1
+      [ "$n" -eq 2 ] && [ "${frow%%$'\t'*}" = scalar ] && return 0
+      [ "$n" -eq 3 ] && [ "${frow%%$'\t'*}" = list ] && _cfg_is_index "${p[2]}" && return 0
+      return 1
+      ;;
+    worktrees)
+      # Issue 0245's worktrees: block, the built-in worktrees's settings, read
+      # by lib/cmd/worktrees alone: `branch`, the branch landed work reaches
+      # (default main), and `banks.<N>`, the ref patterns whose refs are banks
+      # (default none). Added in the same change as the reader.
+      [ "$n" -eq 2 ] && [ "${p[1]}" = branch ] && return 0
+      [ "$n" -eq 3 ] && [ "${p[1]}" = banks ] && _cfg_is_index "${p[2]}" && return 0
+      return 1
+      ;;
+    build)
+      # ST0011 WP-16's build: block, read by lib/cmd/cache alone:
+      # `inputs.<N>`, the input paths every artefact's key reads, and
+      # `artefacts.<name>` with its `tool` (a row of the toolchain table, held
+      # to it by cfg_validate), its `path` and its own `inputs.<N>`. Added in
+      # the same change as the reader.
+      [ "$n" -eq 3 ] && [ "${p[1]}" = inputs ] && _cfg_is_index "${p[2]}" && return 0
+      if [ "$n" -eq 4 ] && [ "${p[1]}" = artefacts ]; then
+        case "${p[3]}" in tool | path) return 0 ;; esac
+      fi
+      [ "$n" -eq 5 ] && [ "${p[1]}" = artefacts ] && [ "${p[3]}" = inputs ] && _cfg_is_index "${p[4]}" && return 0
+      return 1
+      ;;
+    commands)
+      if [ "$n" -eq 3 ]; then
+        # `log` and `grammar` at COMMAND level, not just option level: a
+        # command-level `run:` seals on exactly the terms an option-level one
+        # does (extended to command level by WP-14). They were readable by
+        # run_command and unknown to the schema, so the one thing that would
+        # have caught the mismatch -- validation -- rejected correct config
+        # instead.
+        #
+        # `args` is help's usage hint -- the `[--iex]` in `server [--iex]`. It
+        # carries what the corpus put in column one beside the command name,
+        # which is information no generator can derive.
+        #
+        # `restore` is `fullcycle`'s and only `fullcycle` reads it: the command
+        # line that puts back release artefacts the cycle deleted. It is here
+        # the same day it was added, which is not how `referent` and the
+        # `log`/`grammar` pair went -- both shipped READABLE BY THE
+        # RUNTIME AND UNKNOWN TO THIS LIST, so `doctor` reported correct config
+        # as an unknown key while the feature worked perfectly. This one was
+        # caught by the reference config failing its own validation test, which
+        # is the control that exists for exactly this and had to fire twice
+        # before anyone put a key in on time.
+        case "${p[2]}" in enabled | summary | group | args | run | handler | log | grammar | restore) return 0 ;; esac
+        return 1
+      fi
+      if [ "$n" -eq 5 ] && [ "${p[2]}" = options ]; then
+        case "${p[4]}" in run | grammar | log | in_all | summary | args | enabled) return 0 ;; esac
+        return 1
+      fi
+      # `platforms` (ST0011 WP-17): the list of platform words an option runs
+      # on, a list alone, so one written as a single word is unknown here. Its
+      # values are held to the words by cfg_validate (is_platform_word).
+      if [ "$n" -eq 6 ] && [ "${p[2]}" = options ] && [ "${p[4]}" = platforms ] && _cfg_is_index "${p[5]}"; then
+        return 0
+      fi
+      return 1
+      ;;
+  esac
+  return 1
+}
+
+# --- the release: block (ST0007) -------------------------------------------
+#
+# THE ONE STATEMENT OF THE RELEASE KEYS: shape, dotted key under `release.`,
+# the verbs of `release` that read it, and default. The schema branch above,
+# the readers below and the value checks all read it, so a key added here is
+# known, defaulted and validated in one edit. Every key has a default and every
+# default can be overridden.
+#
+# THE READERS COLUMN (ST0008 WP-08) names, comma-separated, each verb that
+# reads the key, from `verbs`' own default: a cut (`cut`), `status`, `notes`,
+# `check`, `attach`, `snapshot` and `gates`. A declared key that no verb
+# `release.verbs` offers reads is refused as unread config, issue 0080's class.
+# `<verb>!<key>` reads it only while `release.<key>` is not declared: `attach`
+# reads `remotes` only as `repo`'s fallback (release_repo), so with `repo`
+# declared it reads none, and `snapshot` reads `branch` only while
+# `publish.branch` is not. A cut reads the snapshot's keys and the publish keys,
+# since under `publish.url` it makes its release public as that snapshot, and
+# `status` reads the publish keys, to read the public repository's refs.
+# Printing a key is not reading it: `release check` prints every one.
+#
+# A list's default items are separated by `|`. A project declares a list
+# EXPLICITLY EMPTY as the single item `-` (devbin's no-default sentinel): the
+# grammar has no `[]`, and without it `gates` could not be overridden to none.
+# An undeclared `remotes` means every remote `git remote` lists, in that order,
+# which only the release command can read -- so `remotes` is the one list that
+# cannot be declared `-`: a reader who learned `gates: -` means no gates would
+# take `remotes: -` to mean no remotes, and the release would push everywhere.
+#
+# A SCALAR DECLARED `-` READS AS `-`, which only a reader that asks for it
+# means anything by: `ci.query: -` is the opt-out from the candidate leg
+# (cut_candidate_declared), since ci.query's default is the built-in query, so
+# every cut has a candidate unless its project says otherwise (ST0011 WP-02c).
+# `check` reads the query and its two settings, since release check asks the
+# built-in whether a push of the next cut's candidate starts its workflow.
+#
+# THE BUILT-IN QUERY, as a release.ci.query names it: the one spelling every
+# reader of it asks (cfg_ci_query_is_builtin and the refusals that name it),
+# and ci.query's default, stated here, above the table that names it. bin/devbin
+# is the invocation in every project, so an alias of it is no spelling of the
+# built-in.
+_DEVBIN_CI_BUILTIN_QUERY="bin/devbin ci-state"
+_DEVBIN_RELEASE_SCHEMA="
+scalar tag             cut,status,attach,snapshot v{version}
+list   remotes         cut,status,attach!repo
+scalar branch          cut,status,snapshot!publish.branch main
+scalar notes.kind      cut,status,notes,check changelog
+scalar notes.run       cut,status,notes,check
+list   derived         cut
+list   gates           cut,status,gates               check all|test all
+list   legs            cut,status
+scalar ci.query        cut,status,check               $_DEVBIN_CI_BUILTIN_QUERY
+scalar ci.workflow     cut,check                      tests.yml
+scalar ci.summary      cut,check
+scalar ci.wait         cut                            60m
+scalar object          cut,status,check,attach local
+scalar title           cut,status                     {tag}
+scalar repo            cut,status,attach
+scalar object_wait     cut                            20m
+list   after           cut,status
+list   verbs           cut,status,notes,check,attach,snapshot,gates cut|status|notes|check|attach|snapshot|gates
+scalar assets.workflow cut,status,attach
+scalar assets.wait     cut,attach                     30m
+scalar snapshot.list   cut,snapshot
+scalar snapshot.author cut,snapshot
+scalar snapshot.message cut,snapshot                  {name} {version}
+scalar publish.url     cut,status,snapshot,attach
+scalar publish.branch  cut,status,snapshot
+scalar publish.candidate cut,status                   candidate/{tag}
+"
+
+# _cfg_release_row <key> -- `<shape><TAB><default>` for a release key, or
+# non-zero when the schema has no such key.
+_cfg_release_row() {
+  local want="$1" shape key def IFS=$' \t\n'
+  while read -r shape key _ def; do
+    [ -n "$shape" ] || continue
+    if [ "$key" = "$want" ]; then
+      printf '%s\t%s\n' "$shape" "$def"
+      return 0
+    fi
+  done <<<"$_DEVBIN_RELEASE_SCHEMA"
+  return 1
+}
+
+# _cfg_release_known <sub> -- true when `release.<sub>` is a legal path: a
+# scalar key exactly, or a list key followed by an index.
+_cfg_release_known() {
+  local sub="$1" row
+  if row="$(_cfg_release_row "$sub")"; then
+    [ "${row%%$'\t'*}" = scalar ]
+    return
+  fi
+  case "$sub" in *.*) ;; *) return 1 ;; esac
+  _cfg_is_index "${sub##*.}" || return 1
+  row="$(_cfg_release_row "${sub%.*}")" || return 1
+  [ "${row%%$'\t'*}" = list ]
+}
+
+# _cfg_release_default <key> -- the default, a list's items joined by `|`.
+_cfg_release_default() {
+  local row
+  row="$(_cfg_release_row "$1")" || return 1
+  printf '%s\n' "${row#*$'\t'}"
+}
+
+# _cfg_release_shape_is <key> <shape> -- refuse, naming the key, a key the
+# schema lacks or one read in the wrong shape. A reader asking for `bump`
+# would otherwise get an empty default and read it as "declared nothing".
+_cfg_release_shape_is() {
+  local row
+  if ! row="$(_cfg_release_row "$1")"; then
+    printf 'config: the release: schema has no key: %s\n' "$1" >&2
+    return 1
+  fi
+  if [ "${row%%$'\t'*}" != "$2" ]; then
+    printf 'config: release.%s is a %s, not a %s\n' "$1" "${row%%$'\t'*}" "$2" >&2
+    return 1
+  fi
+}
+
+# cfg_release_declared <key> -- true when the project declared `release.<key>`:
+# a scalar with a value, or a list with at least one item, `-` included, since
+# `-` is a declaration that the list is empty. The one answer to "declared or
+# default": both readers below and `release check` ask it.
+cfg_release_declared() {
+  local row
+  row="$(_cfg_release_row "$1")" || return 1
+  case "${row%%$'\t'*}" in
+    scalar) cfg_has "release.$1" ;;
+    list) [ -n "$(cfg_list "release.$1")" ] ;;
+    *) return 1 ;;
+  esac
+}
+
+# cfg_release_get <key> -- the declared value of a release scalar, or its default.
+cfg_release_get() {
+  _cfg_release_shape_is "$1" scalar || return 1
+  if cfg_release_declared "$1"; then
+    cfg_get "release.$1"
+  else
+    _cfg_release_default "$1"
+  fi
+}
+
+# cfg_release_list <key> -- a release list's items, one per line: the declared
+# items, nothing when declared as `-`, or the default items.
+#
+# IFS IS PINNED, because the item indices are split from cfg_list's lines, and
+# under a caller's `IFS=` the whole list would arrive as one index -- the hole
+# _word_in in lib/helpers had until issue 0066's review pinned it there.
+cfg_release_list() {
+  local key="$1" i items="" def IFS=$' \t\n'
+  _cfg_release_shape_is "$key" list || return 1
+  for i in $(cfg_list "release.$key"); do
+    items="${items:+$items
+}$(cfg_get "release.$key.$i")"
+  done
+  if cfg_release_declared "$key"; then
+    is_no_default "$items" || printf '%s\n' "$items"
+    return 0
+  fi
+  def="$(_cfg_release_default "$key")"
+  [ -z "$def" ] || printf '%s\n' "${def//|/$'\n'}"
+  return 0
+}
+
+# cfg_release_first_remote -- the first declared `remotes` entry, or nothing
+# when none is declared: release_repo's second argument, which names the
+# repository from the remote a release pushes to first. The cut
+# (declared_remote) and the built-in ci-state both read it here, so a cut and
+# the CI it reads name one repository. Returns 1 when the list cannot be read.
+cfg_release_first_remote() {
+  local list
+  if ! cfg_release_declared remotes; then
+    printf '\n'
+    return 0
+  fi
+  list="$(cfg_release_list remotes)" || return 1
+  printf '%s\n' "${list%%$'\n'*}"
+}
+
+# cfg_ci_query_is_builtin <query> -- true when <query>'s words are the built-in
+# query's, _DEVBIN_CI_BUILTIN_QUERY: split on space, tab and newline, as
+# run_words splits, and never globbed, since validation runs wherever doctor
+# stands (has_words, lib/helpers).
+cfg_ci_query_is_builtin() {
+  # IFS is this function's own, so the words join with one space whatever the
+  # caller's IFS is.
+  local IFS=' '
+  local -a w=()
+  # read -d '' meets the end of its input before any NUL, so it returns 1 with
+  # the words already in w; that 1 is the end of the input, not a failure.
+  IFS=$' \t\n' read -r -d '' -a w <<<"$1" || true
+  [ "${w[*]}" = "$_DEVBIN_CI_BUILTIN_QUERY" ]
+}
+
+# cut_candidate_declared -- 0 when a cut has a candidate leg: release.ci.query
+# reads a query, the built-in by default or one the project declares, and not
+# `-`, the opt-out (ST0011 WP-02c), in either shape: a publishing cut's
+# candidate is the release commit's snapshot, at release.publish.url, and any
+# other's is the release commit. THE ONE ANSWER to whether a candidate is in
+# effect, which validation, a cut's pre-flight and release status ask, and
+# release check and release attach where the cut is offered: it never asks
+# whether a cut is offered itself, so those two ask that first. It lives here,
+# beside the table it reads, so validation asks it too, and keeps the name the
+# release command gave it.
+cut_candidate_declared() {
+  local q
+  q="$(cfg_release_get ci.query)" || return 1
+  ! is_no_default "$q"
+}
+
+# THE SKIP MARKERS: a push whose commit's message holds one starts no run of a
+# workflow, whatever its trigger says (GitHub's rule for push events). One
+# statement of them, which _cfg_release_problems reads against
+# release.snapshot.message, filled as the snapshot carries it, since a
+# publishing cut's candidate is the snapshot (ST0011 WP-02c).
+_DEVBIN_CI_SKIP_MARKERS=('[skip ci]' '[ci skip]' '[no ci]' '[skip actions]' '[actions skip]')
+
+# cfg_ci_skip_marker <text> -- the first skip marker <text> holds, matched
+# without case, since GitHub does not say it matches with case, and status 0;
+# nothing, status 1, when it holds none. Pure.
+cfg_ci_skip_marker() {
+  local m lower="${1,,}"
+  for m in "${_DEVBIN_CI_SKIP_MARKERS[@]}"; do
+    if [[ "$lower" == *"$m"* ]]; then
+      printf '%s\n' "$m"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# cfg_release_verbs -- every verb `release` has, one per line, in the table's
+# order: the default of `release.verbs`, which offers them all. THE ONE
+# STATEMENT OF THE VERBS (ST0008 WP-08): the value check below, the readers
+# column's arm and the handler's argument loop and usage read them here.
+cfg_release_verbs() {
+  local def
+  def="$(_cfg_release_default verbs)" || return 1
+  printf '%s\n' "${def//|/$'\n'}"
+}
+
+# --- the macos: block (issue 0226) ------------------------------------------
+#
+# THE ONE STATEMENT OF THE MACOS KEYS, the built-in macos's settings: shape
+# (every one a scalar), the key under `macos.`, and its default. The schema
+# branch above and cfg_macos_get both read it. A key with no default here has
+# no sound one: the app and its bundle id are the project's, and the built-in
+# refuses to sign without them. The asset's default, the app's own name with
+# `.zip`, is derived by lib/cmd/macos from `app`, so it is empty here, as are
+# the defaults of version_from (project.version_from) and build_root (the
+# directory holding `app`), each derived there from another key (issue 0243).
+# A path may open with `~`, `$HOME` or an XDG base-directory variable
+# (path_expand, lib/helpers).
+#
+#   app           the .app bundle the build leaves, from the project root or absolute
+#   build         the command line that builds it, run at the root; none: built already
+#   bundle_id     the CFBundleIdentifier the bundle must carry and is signed as
+#   entitlements  the entitlements file signed in, from the root; none: signed without
+#   keychain      the login keychain's service prefix the notary credentials live under
+#   asset         the release asset's name
+#   version_from  the file the app's version is read from, when it versions apart
+#   commit_stamp  the Info.plist key the build writes its commit into; none: not checked
+#   kind_stamp    the Info.plist key the build writes its kind into; none: not checked
+#   kind_value    the value kind_stamp must carry; read only with kind_stamp
+#   build_root    where publish's last Launch Services drop looks
+_DEVBIN_MACOS_SCHEMA="
+scalar app
+scalar build
+scalar bundle_id
+scalar entitlements
+scalar keychain     devbin.apple
+scalar asset
+scalar version_from
+scalar commit_stamp
+scalar kind_stamp
+scalar kind_value   release
+scalar build_root
+"
+
+# _cfg_macos_row <key> -- the default of a macos key (empty when it has none),
+# or non-zero when the schema has no such key.
+_cfg_macos_row() {
+  local want="$1" shape key def IFS=$' \t\n'
+  while read -r shape key def; do
+    [ -n "$shape" ] || continue
+    if [ "$key" = "$want" ]; then
+      printf '%s\n' "$def"
+      return 0
+    fi
+  done <<<"$_DEVBIN_MACOS_SCHEMA"
+  return 1
+}
+
+# cfg_macos_get <key> -- the declared value of a macos key, or its default.
+# Refuses, naming the key, one the schema lacks, so a misspelt read is never
+# taken for a key left at its default.
+cfg_macos_get() {
+  local def
+  if ! def="$(_cfg_macos_row "$1")"; then
+    printf 'config: the macos: schema has no key: %s\n' "$1" >&2
+    return 1
+  fi
+  cfg_get "macos.$1" "$def"
+}
+
+# cfg_macos_declared -- 0 when the project declares the built-in macos
+# (commands.macos.enabled), whose stage is then a leg of every cut, signing and
+# notarising the app at the release commit (ST0011 WP-06). THE ONE TEST, which
+# a cut's pre-flight, release status and doctor ask.
+cfg_macos_declared() {
+  is_true_word "$(cfg_get "commands.macos.enabled" false)"
+}
+
+# cfg_macos_artefacts -- each build.artefacts entry whose path is macos.app's,
+# one name a line, and nothing when macos.app is undeclared or no entry's path
+# is it (ST0011 WP-06). Compared in any case of their letters, as
+# cache_paths_overlap compares, with a leading `./` and a trailing `/` dropped
+# from macos.app; an app written from home, from XDG or as an absolute path
+# names no entry, whose paths lie below the project root. The names split on
+# purpose: the config parser holds every key to letters, digits, _ and -.
+cfg_macos_artefacts() {
+  local app a p IFS=$' \t\n'
+  app="$(cfg_macos_get app)" || return 1
+  while [[ "$app" == ./* ]]; do app="${app#./}"; done
+  while [[ "$app" == */ ]]; do app="${app%/}"; done
+  [ -n "$app" ] || return 0
+  for a in $(cfg_list build.artefacts); do
+    p="$(cfg_get "build.artefacts.$a.path")"
+    [ "${p,,}" != "${app,,}" ] || printf '%s\n' "$a"
+  done
+}
+
+# cfg_macos_artefact -- the artefact the macOS stage caches (ST0011 WP-06), THE
+# ONE ANSWER app-sign, the cut and doctor read: the one entry
+# cfg_macos_artefacts names, at 0, which app-sign pulls from the cache before
+# macos.build and puts after it, and whose key a cut names in the release's
+# seal; nothing at 1 when no entry's path is the app's, so the stage builds
+# its app uncached; at 2 why there is none to take when two or more entries
+# name the app, which config validation refuses, so the stage never guesses
+# between them; and at 3 why there is none when macos.build is not declared,
+# since a stage that builds no app pulls and puts none.
+cfg_macos_artefact() {
+  local arts build
+  arts="$(cfg_macos_artefacts)" || return 1
+  if [ "$arts" != "${arts%%$'\n'*}" ]; then
+    printf "build.artefacts %s each have macos.app's path, so the macOS stage takes none of them -- declare the app's artefact once\n" "${arts//$'\n'/, }"
+    return 2
+  fi
+  build="$(cfg_macos_get build)" || return 1
+  if [ -z "$build" ]; then
+    printf 'macos.build is not declared, so the macOS stage builds no app, and pulls and puts none\n'
+    return 3
+  fi
+  [ -n "$arts" ] || return 1
+  printf '%s\n' "$arts"
+}
+
+# --- the formula: block (issue 0227) ----------------------------------------
+#
+# THE ONE STATEMENT OF THE FORMULA KEYS, the built-in formula's settings: shape,
+# the key under `formula.`, and its default. The schema branch above and the two
+# readers below read it. A key with no default here has one lib/cmd/formula
+# derives (name, template, tap, repo, manifest), or none that is sound (assets,
+# bin, cask: the project's own).
+#
+#   mode      source (a formula built from the tag's checkout) or assets (one
+#             that installs the release's own assets)
+#   name      the formula's name; default project.name
+#   template  the formula template, from the project root; default
+#             packaging/homebrew/<name>.rb
+#   tap       the tap's git url; default github's homebrew-<name> under the
+#             release repository's owner
+#   repo      assets: the repository whose release carries the assets and its
+#             sums; default the release repository
+#   sums      assets: the sums file's name on that release
+#   manifest  assets: the keg's T3 manifest, under libexec; default .<name>-install
+#   cask      assets: a cask template, from the project root; none: no cask
+#   assets    assets: the asset names the templates take a sha256 of, each may
+#             hold {version}
+#   bin       assets: the keg's executables, from libexec, each set 0755 and
+#             linked into bin
+_DEVBIN_FORMULA_SCHEMA="
+scalar mode      source
+scalar name
+scalar template
+scalar tap
+scalar repo
+scalar sums      SHA256SUMS
+scalar manifest
+scalar cask
+list   assets
+list   bin
+"
+
+# _cfg_formula_row <key> -- the shape of a formula key, then a tab and its
+# default, or non-zero when the schema has no such key.
+_cfg_formula_row() {
+  local want="$1" shape key def IFS=$' \t\n'
+  while read -r shape key def; do
+    [ -n "$shape" ] || continue
+    if [ "$key" = "$want" ]; then
+      printf '%s\t%s\n' "$shape" "$def"
+      return 0
+    fi
+  done <<<"$_DEVBIN_FORMULA_SCHEMA"
+  return 1
+}
+
+# cfg_formula_get <key> -- the declared value of a formula scalar, or its
+# default. Refuses, naming the key, one the schema lacks or a list, so a
+# misspelt read is never taken for a key left at its default.
+cfg_formula_get() {
+  local row
+  if ! row="$(_cfg_formula_row "$1")" || [ "${row%%$'\t'*}" != scalar ]; then
+    printf 'config: the formula: schema has no scalar key: %s\n' "$1" >&2
+    return 1
+  fi
+  cfg_get "formula.$1" "${row#*$'\t'}"
+}
+
+# cfg_formula_list <key> -- a formula list's items, one per line, nothing when
+# it is not declared. Refuses a key the schema has no list for.
+cfg_formula_list() {
+  local row i
+  if ! row="$(_cfg_formula_row "$1")" || [ "${row%%$'\t'*}" != list ]; then
+    printf 'config: the formula: schema has no list key: %s\n' "$1" >&2
+    return 1
+  fi
+  cfg_list "formula.$1" | while IFS= read -r i; do
+    [ -n "$i" ] && cfg_get "formula.$1.$i"
+  done
+  return 0
+}
+
+# cfg_formula_name -- the formula's name: formula.name, or project.name where
+# it is not declared. THE ONE DERIVATION of that default (issue 0227): the
+# built-in formula asks it, and so does any other reader of the formula's name,
+# so none restates the fallback.
+cfg_formula_name() {
+  local n
+  n="$(cfg_formula_get name)" || return 1
+  [ -n "$n" ] || n="$(cfg_get project.name)"
+  printf '%s\n' "$n"
+}
+
+# cfg_ident <value> [<name-var> <email-var>] -- rc 0 when <value> is
+# `Name <email>` exactly as git writes an identity, with the name and the email
+# in the two variables when they are named: one space before the `<`, no
+# control character, no `<` or `>` but the pair around the email, an email with
+# no space and an @ inside it, and neither part beginning or ending with a
+# character git strips from an identity (a space, `,`, `:`, `;`, `"`, `'` or
+# `\`). What git would write differently is refused rather than read, so the
+# identity a person declares is the one every commit made under it carries, and
+# a history can be read against it byte for byte (issue 0239). THE ONE PARSER
+# of an identity: release.snapshot.author's value check and the snapshot
+# builder both ask it.
+cfg_ident() {
+  local _ci_v="$1" _ci_n _ci_e _ci_p _ci_strip=$' ,:;"\'\\'
+  [[ "$_ci_v" == *' <'*'>' && "$_ci_v" != *[[:cntrl:]]* ]] || return 1
+  _ci_n="${_ci_v%% <*}"
+  _ci_e="${_ci_v#* <}"
+  _ci_e="${_ci_e%>}"
+  [[ -n "$_ci_n" && "$_ci_n$_ci_e" != *[\<\>]* ]] || return 1
+  [[ "$_ci_e" =~ ^[^@[:space:]]+@[^[:space:]]+$ ]] || return 1
+  for _ci_p in "$_ci_n" "$_ci_e"; do
+    [[ "$_ci_strip" != *"${_ci_p:0:1}"* && "$_ci_strip" != *"${_ci_p: -1}"* ]] || return 1
+  done
+  [ -n "${2-}" ] || return 0
+  local -n _ci_name="$2" _ci_email="$3"
+  _ci_name="$_ci_n" _ci_email="$_ci_e"
+}
+
+# _cfg_release_value_problem <path> <value> -- print why a release value
+# cannot be read, and succeed; fail when the value is fine. A value it cannot
+# check is accepted, failing, with a line of its own on stderr saying so:
+# release.tag, where git cannot be asked.
+_cfg_release_value_problem() {
+  local v="$2" key="${1#release.}"
+  case "$key" in
+    tag)
+      if [[ "$v" != *"{version}"* ]]; then
+        printf 'must contain {version}, or every release would carry the same tag'
+        return 0
+      fi
+      # THE FILLED TAG IS A NAME GIT TAKES (ST0011 WP-02c): filled with a
+      # stand-in version, digits and dots as a tree declares one, which no ref
+      # rule refuses, so a refusal is the template's own text. A tag git cannot
+      # make would stop a cut at its tag step, after its candidate's run, and
+      # git refuses brackets and spaces, so no skip marker such as [skip ci]
+      # can reach the release commit's message, `release: <tag>`. Where git
+      # cannot be asked at all (any status but 0 and 1), that is said on
+      # stderr and the template is accepted, never refused for a name git might
+      # take: a cut's tag step meets it.
+      local tag_rc=0
+      is_tag_name "$(release_tag_name "$v" 0.0.0)" || tag_rc=$?
+      case "$tag_rc" in
+        0) return 1 ;;
+        1) ;;
+        *)
+          printf 'config: %s: release.tag: not checked: git could not be asked whether "%s", filled, is a name it takes for a tag (exit %s), so a cut'"'"'s tag step meets it\n' "$_DEVBIN_CFG_FILE" "$v" "$tag_rc" >&2
+          return 1
+          ;;
+      esac
+      printf 'filled, is not a name git takes for a tag, so no cut could make it -- and a skip marker such as [skip ci] in it would reach the release commit'"'"'s message'
+      ;;
+    notes.kind)
+      case "$v" in changelog | releases | command) return 1 ;; esac
+      printf 'must be changelog, releases or command'
+      ;;
+    object)
+      case "$v" in local | ci | none) return 1 ;; esac
+      printf 'must be local, ci or none'
+      ;;
+    ci.wait | object_wait | assets.wait)
+      [[ "$v" =~ ^[0-9]+[smh]$ ]] && return 1
+      printf 'must be a whole number of s, m or h, eg 20m'
+      ;;
+    legs.*)
+      # A REMOTE LEG IS A HOST ALIAS (ST0011 WP-05): ssh is handed the name as a
+      # word on its command line, so a value without an alias's shape
+      # (is_host_alias) could be read there as something else, an option first.
+      # `-` declares no remote leg, as leaving the key out does.
+      is_no_default "$v" && return 1
+      is_host_alias "$v" && return 1
+      printf 'is not a host alias -- name a host from your ssh config: letters, digits, dot, dash and underscore, starting with a letter or a digit'
+      ;;
+    verbs.*)
+      # "-" is _cfg_release_problems', which says what it would mean, as it
+      # does for remotes.
+      is_no_default "$v" && return 1
+      local all
+      all="$(cfg_release_verbs)"
+      _word_in "$v" "${all//$'\n'/ }" && return 1
+      printf 'must be one of %s%s' "${all//$'\n'/, }" "$(_cfg_retired_why "$1" "$v")"
+      ;;
+    assets.workflow | ci.workflow)
+      [[ "$v" =~ ^[^/[:space:]]+\.ya?ml$ ]] && return 1
+      printf 'must be the file name of a workflow in .github/workflows, eg tests.yml or assets.yml'
+      ;;
+    repo)
+      [[ "$v" =~ ^([^/[:space:]]+/)?[^/[:space:]]+/[^/[:space:]]+$ ]] && return 1
+      printf 'must be OWNER/NAME or HOST/OWNER/NAME, as gh --repo takes it'
+      ;;
+    # THE SNAPSHOT'S KEYS (issue 0239). The list is a file in the tree, read at
+    # the commit a snapshot is made from, so it is a path from the root and never
+    # one out of it. The author is the one identity every snapshot is made under,
+    # as git writes one (cfg_ident). The message names no placeholder the builder
+    # does not fill, so none reaches a published commit as text. The url is read
+    # from a repository of the build's own, so a relative path would name a
+    # different directory there: it is a url, an scp-style `host:path`, or an
+    # absolute path, and it never opens with `-`, which git would read as an
+    # option.
+    snapshot.list)
+      case "$v" in
+        '' | /* | .. | ../* | */.. | */../*) ;;
+        *) return 1 ;;
+      esac
+      printf 'must be a path in the project, from its root, eg tests/shipped.paths'
+      ;;
+    snapshot.author)
+      cfg_ident "$v" && return 1
+      printf 'must be Name <email> as git writes an identity, with one space before the < and nothing git strips at either end of the name or the email: the identity each snapshot is made under'
+      ;;
+    snapshot.message)
+      local rest="${v//\{name\}/}"
+      rest="${rest//\{version\}/}"
+      # A skip marker in the message, filled, is _cfg_release_problems' to
+      # refuse, since {name} is filled from project.name, beyond this value.
+      [ -z "$v" ] || [[ "$rest" == *[{}]* ]] || [[ "$v" == *$'\n'* ]] || return 1
+      printf 'must be one line, with no placeholder but {name} and {version}'
+      ;;
+    publish.branch)
+      [[ "$v" =~ ^[^-[:space:]][^[:space:]]*$ ]] && return 1
+      printf 'must be a branch name'
+      ;;
+    publish.url)
+      if [[ "$v" =~ ^[^-[:space:]][^[:space:]]*$ ]]; then
+        case "$v" in
+          *://* | /*) return 1 ;;
+          *) [[ "${v%%/*}" != *:* ]] || return 1 ;;
+        esac
+      fi
+      printf 'must be the url of the public repository, an scp-style host:path or an absolute path, as git reads one'
+      ;;
+    # THE CANDIDATE'S BRANCH (issue 0240): a template holding {tag}, so each
+    # release has a branch of its own, and more than {tag} alone, since a branch
+    # named as the tag is would make the tag's name ambiguous. No blank, and no
+    # `-` first, which git would read as an option.
+    publish.candidate)
+      if [[ "$v" == *"{tag}"* ]] && [ "$v" != "{tag}" ] && [[ "$v" =~ ^[^-[:space:]][^[:space:]]*$ ]]; then return 1; fi
+      printf 'must be a branch name holding {tag} and more, eg candidate/{tag}'
+      ;;
+    *)
+      [ -n "$v" ] && return 1
+      printf 'is empty -- leave the key out to take its default'
+      ;;
+  esac
+  return 0
+}
+
+# _cfg_release_problems -- the checks that need more than one key: a list
+# declared `-` beside other items, and a declared key the declared (or
+# default) mode never reads. A key nothing reads is silently ignored config,
+# the class issue 0080 closed for booleans.
+_cfg_release_problems() {
+  local rc=0 shape key readers i n sentinel kind object offered why legs_named IFS=$' \t\n'
+  # NO PIPELINE, AND NOT FOR STYLE. The items were read through
+  # `... | grep -qx -- -`, and under pipefail, which every handler sets, a grep
+  # that matches on the first line exits before the writer has finished: the
+  # writer takes SIGPIPE, the pipeline fails, and the refusal was skipped. A `-`
+  # beside an item larger than the pipe buffer was accepted every time. A loop
+  # has no second process to lose, and it asks is_no_default, the one spelling
+  # of the sentinel test (issue 0066).
+  #
+  # THE LIST KEYS ARE READ FROM THE TABLE, not typed here: a typed list was a
+  # second statement of which keys are lists, and a list row added to the table
+  # would have skipped this refusal in silence.
+  while read -r shape key _; do
+    [ "$shape" = list ] || continue
+    n=0
+    sentinel=0
+    for i in $(cfg_list "release.$key"); do
+      n=$((n + 1))
+      if is_no_default "$(cfg_get "release.$key.$i")"; then sentinel=1; fi
+    done
+    if [ "$n" -gt 1 ] && [ "$sentinel" -eq 1 ]; then
+      printf 'config: %s: release.%s: "-" declares the list empty, so it must be the only item\n' "$_DEVBIN_CFG_FILE" "$key" >&2
+      rc=1
+    fi
+  done <<<"$_DEVBIN_RELEASE_SCHEMA"
+  # `remotes: -` IS REFUSED, see the table's comment: undeclared means every
+  # remote, so an explicitly empty list could only mean "push nowhere", which no
+  # release step does, and reading it as "every remote" would push where the
+  # project said not to.
+  if cfg_release_declared remotes && [ -z "$(cfg_release_list remotes)" ]; then
+    printf 'config: %s: release.remotes: "-" would push the release to no remote -- leave the key out for every remote, or name the remotes\n' "$_DEVBIN_CFG_FILE" >&2
+    rc=1
+  fi
+  # `verbs: -` IS REFUSED TOO, for its own reason: a release that offers no
+  # verb is `commands.release.enabled: false`, which is where to say so.
+  if cfg_release_declared verbs && [ -z "$(cfg_release_list verbs)" ]; then
+    printf 'config: %s: release.verbs: "-" would offer no verb -- a release with none is commands.release.enabled: false\n' "$_DEVBIN_CFG_FILE" >&2
+    rc=1
+  fi
+  kind="$(cfg_release_get notes.kind)"
+  object="$(cfg_release_get object)"
+  if [ "$kind" = command ] && ! cfg_has release.notes.run; then
+    printf 'config: %s: release.notes.run is required under notes.kind: command -- it is what does the work\n' "$_DEVBIN_CFG_FILE" >&2
+    rc=1
+  fi
+  if [ "$kind" != command ] && cfg_has release.notes.run; then
+    printf 'config: %s: release.notes.run is read only under notes.kind: command, and kind is %s\n' "$_DEVBIN_CFG_FILE" "$kind" >&2
+    rc=1
+  fi
+  # THE KEYS A QUERY READS, READ FROM THE TABLE (ST0011 WP-03, WP-02c), as the
+  # list keys are above. release.ci.query reads the built-in when it is not
+  # declared, so a block of ci keys alone is valid, and a ci.* row added to the
+  # table takes the rule below with no word here. The built-in query's two
+  # settings, which workflow's runs and which job's verdict, are read only when
+  # the query is the built-in (cfg_ci_query_is_builtin): a project's own query
+  # reads neither, and `ci.query: -`, the opt-out, reads no CI at all.
+  local cq
+  cq="$(cfg_release_get ci.query)" || cq=""
+  while read -r _ key _; do
+    case "$key" in
+      ci.query) continue ;;
+      ci.*) ;;
+      *) continue ;;
+    esac
+    cfg_has "release.$key" || continue
+    if [ "$key" = ci.wait ]; then
+      # ci.wait bounds every leg of a cut but the local gates (ST0011 WP-05,
+      # WP-06): the candidate, a host release.legs names, and the macOS stage.
+      # A list whose shape is wrong is the value rules' refusal, so a read of
+      # it that fails here names no host.
+      cut_candidate_declared && continue
+      legs_named="$(cfg_release_list legs 2>/dev/null)" || legs_named=""
+      if [ -n "$legs_named" ] || cfg_macos_declared; then
+        continue
+      fi
+      printf 'config: %s: release.ci.wait is read only where a leg other than the local gates runs: a candidate, and release.ci.query is -, the opt-out; a host in release.legs; or the macOS stage (commands.macos.enabled)\n' "$_DEVBIN_CFG_FILE" >&2
+      rc=1
+    elif is_no_default "$cq"; then
+      printf 'config: %s: release.%s is read only by the built-in query, %s, and release.ci.query is -, the opt-out, which reads no CI\n' "$_DEVBIN_CFG_FILE" "$key" "$_DEVBIN_CI_BUILTIN_QUERY" >&2
+      rc=1
+    elif ! cfg_ci_query_is_builtin "$cq"; then
+      printf 'config: %s: release.%s is read only by the built-in query, %s, and release.ci.query is "%s", which reads neither it nor its sibling -- the built-in is spelled exactly so\n' "$_DEVBIN_CFG_FILE" "$key" "$_DEVBIN_CI_BUILTIN_QUERY" "$cq" >&2
+      rc=1
+    fi
+  done <<<"$_DEVBIN_RELEASE_SCHEMA"
+  if cfg_has release.title && [ "$object" != local ]; then
+    printf 'config: %s: release.title is read only under object: local, and object is %s\n' "$_DEVBIN_CFG_FILE" "$object" >&2
+    rc=1
+  fi
+  if cfg_has release.repo && [ "$object" = none ]; then
+    printf 'config: %s: release.repo is read only under object: local or ci, and object is none\n' "$_DEVBIN_CFG_FILE" >&2
+    rc=1
+  fi
+  if cfg_has release.object_wait && [ "$object" != ci ]; then
+    printf 'config: %s: release.object_wait is read only under object: ci, and object is %s\n' "$_DEVBIN_CFG_FILE" "$object" >&2
+    rc=1
+  fi
+  # THE ASSETS ARE ATTACHED UNDER object: local ALONE, as `title` is read:
+  # under `ci` the workflow writes the release object, and an attach would be
+  # its second writer; under `none` there is no object to attach to.
+  for key in assets.workflow assets.wait; do
+    if cfg_has "release.$key" && [ "$object" != local ]; then
+      printf 'config: %s: release.%s is read only under object: local, and object is %s\n' "$_DEVBIN_CFG_FILE" "$key" "$object" >&2
+      rc=1
+    fi
+  done
+  if cfg_has release.assets.wait && ! cfg_has release.assets.workflow; then
+    printf 'config: %s: release.assets.wait is read only when release.assets.workflow is declared\n' "$_DEVBIN_CFG_FILE" >&2
+    rc=1
+  fi
+  # A SNAPSHOT NEEDS ITS LIST AND ITS IDENTITY (issue 0239): the list says what
+  # ships, the author who every snapshot is made by, and neither has a default.
+  # The other snapshot and publish keys say how and where a snapshot is made,
+  # so without a list they are config nothing acts on.
+  if cfg_has release.snapshot.list && ! cfg_has release.snapshot.author; then
+    printf 'config: %s: release.snapshot.author is required beside release.snapshot.list -- it is the identity each snapshot is made under, and it has no default\n' "$_DEVBIN_CFG_FILE" >&2
+    rc=1
+  fi
+  for key in snapshot.author snapshot.message publish.url; do
+    if cfg_has "release.$key" && ! cfg_has release.snapshot.list; then
+      printf 'config: %s: release.%s is read only when release.snapshot.list is declared\n' "$_DEVBIN_CFG_FILE" "$key" >&2
+      rc=1
+    fi
+  done
+  # NO SKIP MARKER IN THE SNAPSHOT'S MESSAGE (ST0011 WP-02c): the snapshot is
+  # the candidate a publishing cut pushes, and a marker in its message starts no
+  # run, whatever the trigger says, so the cut would wait out ci.wait for a
+  # verdict nothing gives. The message is read filled, as snapshot_build fills
+  # it, {name} from project.name and {version} with a stand-in, its default
+  # template among them, since either the template or the name can carry one.
+  if cfg_has release.snapshot.list; then
+    local filled marker
+    # A message that cannot be read is the value rules' refusal, above.
+    filled="$(cfg_release_get snapshot.message)" || filled=""
+    filled="${filled//\{name\}/"$(cfg_get project.name)"}"
+    filled="${filled//\{version\}/0.0.0}"
+    if marker="$(cfg_ci_skip_marker "$filled")"; then
+      printf 'config: %s: release.snapshot.message, filled, is "%s", which holds %s, a skip marker: a push of the snapshot would start no run of CI, whatever its trigger says\n' "$_DEVBIN_CFG_FILE" "$filled" "$marker" >&2
+      rc=1
+    fi
+  fi
+  if cfg_has release.publish.branch && ! cfg_has release.publish.url; then
+    printf 'config: %s: release.publish.branch is read only when release.publish.url is declared\n' "$_DEVBIN_CFG_FILE" >&2
+    rc=1
+  fi
+  # THE CANDIDATE'S REF IS READ WHERE A CUT HAS A CANDIDATE LEG (ST0011),
+  # unless the project opts out (cut_candidate_declared): the cut pushes its
+  # release commit to it for CI, or under publish.url the release commit's
+  # snapshot, at publish.url. Under `ci.query: -` there is no candidate, so
+  # nothing reads it.
+  if cfg_has release.publish.candidate && ! cut_candidate_declared; then
+    printf 'config: %s: release.publish.candidate is read only where a cut has a candidate, and release.ci.query is -, the opt-out\n' "$_DEVBIN_CFG_FILE" >&2
+    rc=1
+  fi
+  # A DECLARED KEY THAT NO OFFERED VERB READS IS REFUSED (ST0008 WP-08), read
+  # from the table's readers column: with `cut` and `status` both off, a gate or
+  # a title is config nothing acts on. An empty list is refused above, so it is
+  # not asked about every key a second time. A list that could not be read is
+  # said, never taken for an empty one.
+  if ! offered="$(cfg_release_list verbs)"; then
+    printf 'config: %s: release.verbs could not be read, so no key was checked against the verbs that read it\n' "$_DEVBIN_CFG_FILE" >&2
+    rc=1
+  elif [ -n "$offered" ]; then
+    while read -r shape key readers _; do
+      [ -n "$shape" ] || continue
+      cfg_release_declared "$key" || continue
+      _cfg_release_read_by "$readers" "$offered" && continue
+      printf 'config: %s: release.%s is read only by %s, and release.verbs offers %s\n' \
+        "$_DEVBIN_CFG_FILE" "$key" "$(_cfg_release_readers_said "$readers")" "${offered//$'\n'/, }" >&2
+      rc=1
+    done <<<"$_DEVBIN_RELEASE_SCHEMA"
+  fi
+  return "$rc"
+}
+
+# _cfg_release_read_by <readers> <offered> -- true when a verb in <offered>, one
+# per line, reads a key whose readers column is <readers>: a verb named alone,
+# or `<verb>!<key>` while `release.<key>` is not declared.
+_cfg_release_read_by() {
+  local r v
+  local -a rs=()
+  IFS=',' read -r -a rs <<<"$1"
+  for r in "${rs[@]}"; do
+    v="${r%%!*}"
+    grep -qxF -- "$v" <<<"$2" || continue
+    [ "$r" = "$v" ] || ! cfg_release_declared "${r#*!}" || continue
+    return 0
+  done
+  return 1
+}
+
+# _cfg_release_readers_said <readers> -- a readers column in words, for a
+# refusal: `cut and status`, `cut, status and attach while release.repo is not
+# declared`.
+_cfg_release_readers_said() {
+  local r said="" last=""
+  local -a rs=()
+  IFS=',' read -r -a rs <<<"$1"
+  for r in "${rs[@]}"; do
+    [ -z "$last" ] || said+="${said:+, }$last"
+    if [ "$r" = "${r%%!*}" ]; then
+      last="$r"
+    else
+      last="${r%%!*} while release.${r#*!} is not declared"
+    fi
+  done
+  printf '%s\n' "${said:+$said and }$last"
+}
+
+# _cfg_path_platform <path> -- true when the path is an item of an option's
+# platforms: list, whose value must be a platform word (ST0011 WP-17).
+_cfg_path_platform() {
+  local -a p
+  IFS='.' read -ra p <<<"$1"
+  [ "${#p[@]}" -eq 6 ] && [ "${p[0]}" = commands ] && [ "${p[2]}" = options ] && [ "${p[4]}" = platforms ]
+}
+
+# cfg_option_platforms <command> <option> -- the option's platforms: list, one
+# word a line, in document order; nothing when it declares none (ST0011 WP-17).
+# IFS is pinned, as cfg_release_list pins it, since the item indices are split
+# from cfg_list's lines.
+cfg_option_platforms() {
+  local i IFS=$' \t\n'
+  for i in $(cfg_list "commands.$1.options.$2.platforms"); do
+    printf '%s\n' "$(cfg_get "commands.$1.options.$2.platforms.$i")"
+  done
+}
+
+# _cfg_path_boolean <path> -- true when devbin reads the path's value as a yes
+# or a no, through is_true_word or is_false_word (issue 0080).
+#
+# THE ONE LIST OF BOOLEAN KEYS. A validator that knows a key but not the words
+# its reader takes lets `enabled: off` through: neither word, so a built-in
+# stayed active and an opt-in stayed off, and nothing said so. config.bats holds
+# every `is_true_word "$(cfg_get ...` reader in lib/ to a path this accepts, so
+# a new boolean reader cannot land without joining it.
+#
+# NOT HERE, deliberately: `log:` reads the words but takes any other word as a
+# log suffix, and `options.<name>.value` is free text that one option (server's
+# --iex) happens to read as a boolean.
+_cfg_path_boolean() {
+  local -a p
+  IFS='.' read -ra p <<<"$1"
+  case "${#p[@]}:${p[0]}" in
+    3:commands) [ "${p[2]}" = enabled ] ;;
+    5:commands) [ "${p[2]}" = options ] && case "${p[4]}" in enabled | in_all) return 0 ;; *) return 1 ;; esac ;;
+    3:options) [ "${p[2]}" = flag ] ;;
+    *) return 1 ;;
+  esac
+}
+
+# _cfg_retired_why <path> [<value>] -- for a key a release of devbin retired,
+# or a value it retired from a key it keeps (a verb of release.verbs), a
+# clause saying what replaced it, for the refusal; nothing for any other key
+# or value. A retired key is refused as unknown, and a retired verb as no verb
+# of release, since nothing reads either, and a project upgrading devbin is
+# told why, not left to look it up.
+_cfg_retired_why() {
+  case "$1" in
+    release.ci.tag) printf ' -- retired: a cut reads CI before the tag, on its candidate ref, so no query is asked about the tag; leave it out' ;;
+    release.ci.base) printf ' -- retired: a cut reads CI on its release commit, through its candidate, before the tag, never on the commit it is cut from; leave it out' ;;
+    release.verbs.*)
+      [ "${2-}" != publish ] ||
+        printf ' -- retired: a cut whose release.publish.url is declared makes its snapshot public itself, once every leg is green; leave it out'
+      ;;
+  esac
+}
+
+# _cfg_path_command_line <path> -- true when the path's value is a command line
+# that devbin splits into words and runs (issue 0082).
+#
+# THE ONE LIST OF COMMAND-LINE KEYS, and it is here because validation is the
+# only reader that sees every key in a file. A `run:` of nothing but spaces is
+# not empty, splits into no words, and used to run the arguments typed after the
+# command AS the command -- so it is refused here as well as at the site, since
+# `doctor` is not on the dispatch path and the site is not on doctor's.
+#
+# The limit worth stating: a command-line key added to the schema without
+# joining this list is validated as ordinary text. Nothing catches that but a
+# reader, the way `referent` and the `log`/`grammar` pair went unlisted above.
+_cfg_path_command_line() {
+  local -a p
+  IFS='.' read -ra p <<<"$1"
+  case "${#p[@]}:${p[0]}" in
+    3:commands) case "${p[2]}" in run | restore) return 0 ;; *) return 1 ;; esac ;;
+    5:commands) [ "${p[2]}" = options ] && [ "${p[4]}" = run ] ;;
+    # The macos built-in's build line (issue 0226), run at the root before app-sign.
+    2:macos) [ "${p[1]}" = build ] ;;
+    # The release core's command lines (issue 0104): notes.run, ci.query, and
+    # every derived:, after: and gates: item, which are read as `<key>.<n>`.
+    3:release)
+      case "${p[1]}.${p[2]}" in
+        notes.run | ci.query) return 0 ;;
+        derived.* | after.* | gates.*) [[ "${p[2]}" =~ ^[0-9]+$ ]] ;;
+        *) return 1 ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# cfg_build_input_paths [<artefact>] -- the build: block's input paths, one a
+# line, each once (ST0011 WP-16). With <artefact>, the paths its key reads: its
+# own inputs: when it declares any, else build.inputs. With none, every input
+# path the block declares, build.inputs and every artefact's own. THE ONE
+# READER of the declaration's inputs: the cache's key, config validation's
+# overlap check and doctor's row all read them here. An empty path is config
+# validation's to refuse, and is not listed. The indices split on purpose: the
+# config parser holds every key to letters, digits, _ and -. Its arrays carry
+# its own prefix, since shellcheck -x reads this file inside every file that
+# sources it and holds a name to one type across them, so a plain name that
+# one of them uses as a string or an indexed array is a breach there.
+# shellcheck disable=SC2120  # the bare call IS the point: every path the block
+# declares, for validation and doctor; the cache passes its artefact from
+# lib/cmd/cache, which in-file analysis cannot see.
+cfg_build_input_paths() {
+  local a i p IFS=$' \t\n'
+  local -a _bip_paths=()
+  local -A _bip_seen=()
+  if [ -n "${1:-}" ]; then
+    for i in $(cfg_list "build.artefacts.$1.inputs"); do
+      _bip_paths+=("$(cfg_get "build.artefacts.$1.inputs.$i")")
+    done
+  fi
+  if [ -z "${1:-}" ] || [ "${#_bip_paths[@]}" -eq 0 ]; then
+    for i in $(cfg_list build.inputs); do
+      _bip_paths+=("$(cfg_get "build.inputs.$i")")
+    done
+  fi
+  if [ -z "${1:-}" ]; then
+    for a in $(cfg_list build.artefacts); do
+      for i in $(cfg_list "build.artefacts.$a.inputs"); do
+        _bip_paths+=("$(cfg_get "build.artefacts.$a.inputs.$i")")
+      done
+    done
+  fi
+  for p in "${_bip_paths[@]}"; do
+    [ -n "$p" ] || continue
+    [ -z "${_bip_seen[$p]:-}" ] || continue
+    _bip_seen[$p]=1
+    printf '%s\n' "$p"
+  done
+}
+
+# _cfg_build_problems -- the build: block's checks across its keys (ST0011
+# WP-16). An artefact's name that is not one (is_artefact_name) is refused,
+# since the cache's own words, `--help` among them, would read it as an option.
+# An artefact's path that is one of the block's input paths, holds one or lies
+# in one (cache_paths_overlap) is refused, naming both, since a pull replaces
+# what is at the path and would take an input's working tree with it,
+# uncommitted edits and all. Every input path the block declares is asked
+# (cfg_build_input_paths), every artefact's own among them, since a pull
+# removes whatever is there whichever key reads it. A path cache_path_problem
+# refuses is left to that refusal. Status 1 when one is refused. The names
+# split on purpose: the config parser holds every key to letters, digits, _
+# and -.
+_cfg_build_problems() {
+  local a p q ins rc=0 IFS=$' \t\n'
+  # shellcheck disable=SC2119  # the bare call IS the point: every declared path.
+  ins="$(cfg_build_input_paths)"
+  for a in $(cfg_list build.artefacts); do
+    if ! is_artefact_name "$a"; then
+      printf 'config: %s: build.artefacts.%s: "%s" is no artefact name -- start it with a letter or a digit, so the cache never reads it as an option\n' \
+        "$_DEVBIN_CFG_FILE" "$a" "$a" >&2
+      rc=1
+    fi
+    p="$(cfg_get "build.artefacts.$a.path")"
+    if cache_path_problem "$p" >/dev/null; then continue; fi
+    while IFS= read -r q; do
+      [ -n "$q" ] || continue
+      if cache_path_problem "$q" >/dev/null; then continue; fi
+      if cache_paths_overlap "$p" "$q"; then
+        printf 'config: %s: build.artefacts.%s.path: "%s" overlaps the input path "%s" -- a pull replaces what is at the path, so it lies outside every input path the block declares\n' \
+          "$_DEVBIN_CFG_FILE" "$a" "$p" "$q" >&2
+        rc=1
+      fi
+    done <<<"$ins"
+  done
+  # THE APP IS ONE ARTEFACT (ST0011 WP-06): two entries whose path is
+  # macos.app's would leave the macOS stage to guess which to pull and put.
+  local said s=0
+  said="$(cfg_macos_artefact)" || s=$?
+  if [ "$s" -eq 2 ]; then
+    printf 'config: %s: %s\n' "$_DEVBIN_CFG_FILE" "$said" >&2
+    rc=1
+  fi
+  return "$rc"
+}
+
+# cfg_validate -- every key is a schema path, project.name is present, and every
+# boolean key holds a word from lib/helpers's lists, and `project.cargo_root`
+# names a directory holding a Cargo.toml (cargo_root_problem, issue 0225).
+#
+# REFUSES WITHOUT lib/helpers rather than failing each check. `! is_true_word`
+# on a missing function is true, so every boolean value would be reported as
+# wrong, naming the project's file for a defect in the loader.
+cfg_validate() {
+  local k v why rc=0
+  if ! declare -F is_true_word >/dev/null || ! declare -F is_false_word >/dev/null ||
+    ! declare -F has_words >/dev/null || ! declare -F cargo_root_problem >/dev/null ||
+    ! declare -F is_cache_tool >/dev/null || ! declare -F cache_path_problem >/dev/null ||
+    ! declare -F cache_paths_overlap >/dev/null || ! declare -F is_artefact_name >/dev/null ||
+    ! declare -F is_platform_word >/dev/null || ! declare -F is_host_alias >/dev/null; then
+    printf 'config: cfg_validate needs lib/helpers sourced first -- it reads the boolean words, the platform words, the toolchain table, has_words, cargo_root_problem, cache_path_problem, cache_paths_overlap, is_artefact_name and is_host_alias there\n' >&2
+    return 1
+  fi
+  if ! cfg_has project.name; then
+    printf 'config: %s: required key missing: project.name\n' "$_DEVBIN_CFG_FILE" >&2
+    rc=1
+  fi
+  while IFS=$'\t' read -r k v; do
+    [ -n "$k" ] || continue
+    if ! _cfg_path_known "$k"; then
+      printf 'config: %s: unknown key: %s%s\n' "$_DEVBIN_CFG_FILE" "$k" "$(_cfg_retired_why "$k")" >&2
+      rc=1
+    elif _cfg_path_boolean "$k" && ! is_true_word "$v" && ! is_false_word "$v"; then
+      printf 'config: %s: %s: "%s" is not a yes or a no -- use one of: %s (yes) or %s (no)\n' \
+        "$_DEVBIN_CFG_FILE" "$k" "$v" "$_DEVBIN_TRUE_WORDS" "$_DEVBIN_FALSE_WORDS" >&2
+      rc=1
+    elif [[ "$k" == build.artefacts.*.tool ]] && ! is_cache_tool "$v"; then
+      printf 'config: %s: %s: "%s" is no row of the toolchain table -- use one of: %s\n' \
+        "$_DEVBIN_CFG_FILE" "$k" "$v" "$_DEVBIN_CACHE_TOOLS" >&2
+      rc=1
+    elif [[ "$k" == build.inputs.* || "$k" == build.artefacts.*.path || "$k" == build.artefacts.*.inputs.* ]] &&
+      why="$(cache_path_problem "$v")"; then
+      printf 'config: %s: %s: "%s" %s\n' "$_DEVBIN_CFG_FILE" "$k" "$v" "$why" >&2
+      rc=1
+    elif _cfg_path_platform "$k" && ! is_platform_word "$v"; then
+      printf 'config: %s: %s: "%s" is not a platform word -- use one of: %s\n' \
+        "$_DEVBIN_CFG_FILE" "$k" "$v" "$_DEVBIN_PLATFORM_WORDS" >&2
+      rc=1
+    elif [ "$k" = formula.mode ] && [ "$v" != source ] && [ "$v" != assets ]; then
+      printf 'config: %s: %s: "%s" is not a formula mode -- use source or assets\n' "$_DEVBIN_CFG_FILE" "$k" "$v" >&2
+      rc=1
+    elif [ "${k%%.*}" = release ] && why="$(_cfg_release_value_problem "$k" "$v")"; then
+      printf 'config: %s: %s: "%s" %s\n' "$_DEVBIN_CFG_FILE" "$k" "$v" "$why" >&2
+      rc=1
+    elif [ "$k" = project.cargo_root ] && [ -z "${PROJECT_ROOT:-}" ]; then
+      printf 'config: %s: %s: "%s" cannot be judged -- PROJECT_ROOT is not set, so there is no root to find it below\n' \
+        "$_DEVBIN_CFG_FILE" "$k" "$v" >&2
+      rc=1
+    elif [ "$k" = project.cargo_root ] && why="$(cargo_root_problem "$PROJECT_ROOT" "$v")"; then
+      printf 'config: %s: %s: "%s" %s\n' "$_DEVBIN_CFG_FILE" "$k" "$v" "$why" >&2
+      rc=1
+    elif _cfg_path_command_line "$k" && ! has_words "$v"; then
+      printf 'config: %s: %s: "%s" holds no words, so there is no command to run\n' \
+        "$_DEVBIN_CFG_FILE" "$k" "$v" >&2
+      rc=1
+    fi
+  done <<EOF
+$_DEVBIN_CFG
+EOF
+  if [ -n "$(cfg_list release)" ]; then
+    _cfg_release_problems || rc=1
+  fi
+  if [ -n "$(cfg_list build)" ]; then
+    _cfg_build_problems || rc=1
+  fi
+  # THE MACOS PAIR (issue 0243): kind_value is what kind_stamp must carry, so
+  # without kind_stamp it is config nothing reads, and empty it would pass a
+  # bundle that carries no kind at all.
+  if cfg_has macos.kind_value && ! cfg_has macos.kind_stamp; then
+    printf 'config: %s: macos.kind_value is read only when macos.kind_stamp is declared\n' "$_DEVBIN_CFG_FILE" >&2
+    rc=1
+  fi
+  if cfg_has macos.kind_value && [ -z "$(cfg_get macos.kind_value)" ]; then
+    printf 'config: %s: macos.kind_value is empty, so a bundle with no kind stamp would pass -- leave the key out to take its default, release\n' "$_DEVBIN_CFG_FILE" >&2
+    rc=1
+  fi
+  return "$rc"
+}

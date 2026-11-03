@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# The built-in `db`. The corpus survey found this the widest-varying command:
+# the option NAMES agree three ways out of four and the commands behind them do
+# not (`mix ash.setup` / `mix setup` / `mix ecto.setup`). So devbin ships a
+# small declarative core and expects the rest to land as project handlers.
+#
+# What is NOT shipped, and why, because absence is a decision:
+#
+#   codegen  Corpus projects run `mix ash.codegen <name>`, and each refuses a
+#            bare invocation -- a comment in one says why: bare ash.codegen is
+#            interactive and would hang. But it is an ASH task, not an Elixir
+#            one, so cataloguing it would offer it to every Elixir project
+#            including those with no Ash. Projects declare it; the guard is
+#            recorded in WP-11 so it is ported rather than rediscovered.
+#   proxy    Corpus projects use the SAME algorithm -- fly proxy onto a
+#            PGBouncer IPv6 resolved through `fly ssh console` -- differing only
+#            in app, org and host. Shared enough to be worth lifting, but it
+#            encodes a hosting provider, and devbin having an opinion about
+#            fly.io is the kind of thing that makes a framework unusable
+#            somewhere else. It belongs in a project-local library.
+#
+set -euo pipefail
+
+# shellcheck source=lib/gatecmd
+. "${DEVBIN_LIB:?run me through bin/devbin}/gatecmd"
+
+# THE LOCAL DEV LIFECYCLE, AND IT REFUSES PROD -- BUT NOT HERE ANY MORE.
+#
+# `db reset` drops the database. Of the projects devbin was folded from, only
+# one guarded this, and its wording is the right one: these commands ARE the
+# local dev database lifecycle, so being pointed at production is a mistake
+# rather than an advanced use. Shipping `db reset` without the guard would hand
+# every other project a footgun it does not currently have.
+#
+# THE REFUSAL MOVED TO THE CATALOGUE AND THE DISPATCHER (issue 0132). Checked
+# here, it guarded only the lines devbin ships, since a line the project
+# declares runs through run_option or run_command and never reaches this file:
+# `setup.run: mix ash.setup` ran under MIX_ENV=prod, sealed, exit 0. It is now a
+# row in lib/builtins' _DEVBIN_BUILTIN_REFUSALS, which bin/devbin asks before
+# ANY db path runs. A project that genuinely needs a production database
+# operation still writes a handler, which shadows this file totally and is
+# the one thing the refusal lets past -- deliberately a bigger and more visible
+# step than passing a flag.
+run_builtin_gate db "$@"

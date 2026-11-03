@@ -1,0 +1,47 @@
+# cldr -- devbin configuration.
+#
+# Written by: devbin install. Every key, annotated, is vendored beside this
+# file at bin/.devbin/lib/config.reference.yaml.
+
+project:
+  name: cldr
+  languages:
+    - rust
+
+# The devbin this project expects. Enforced by: devbin doctor
+devbin_version: "^0.1.19"
+
+commands:
+  release:
+    enabled: true
+  formula:
+    enabled: true
+
+# The release core. bin/devbin release vX.Y.Z is the whole release: after: is
+# one line, bin/devbin post-cut, which builds, signs, notarises and attaches
+# the macOS asset and then publishes the formula, stopping at the first
+# failure (one line, since the core runs every after: line even when one
+# before it failed). As pplr releases.
+release:
+  repo: matthewsinclair/cldr
+  remotes:
+    - local
+    - upstream
+  branch: main
+  gates:
+    - check all
+    - test all
+  ci:
+    workflow: build.yml
+  object: local
+  after:
+    - bin/devbin post-cut
+
+# The Homebrew formula: the signed macOS release asset, from the template
+# packaging/homebrew/cldr.rb.
+formula:
+  mode: assets
+  assets:
+    - "cldr-{version}-aarch64-apple-darwin.tar.gz"
+  bin:
+    - bin/cldr

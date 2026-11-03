@@ -1,0 +1,201 @@
+#!/usr/bin/env zsh
+# devbin: summary = sign, notarise and pack cldr's macOS binary
+#
+# `bin/devbin macos` for cldr, a project handler, cut down from pplr's signer
+# (itself from Intent's) to cldr's one binary.
+#
+#   bin/devbin macos stage                  copy target/release/cldr into dist/macos/stage
+#   bin/devbin macos sign [--adhoc]         sign it: hardened runtime, secure timestamp, its fixed identifier
+#   bin/devbin macos verify [--adhoc]       codesign --verify --strict -R <designated requirement>, the
+#                                           runtime flag read back, and spctl
+#   bin/devbin macos notarize [--dry-run]   submit the signed binary to Apple's notary service
+#   bin/devbin macos pack [--adhoc]         the release asset, cldr-<version>-<triple>.tar.gz (bin/cldr and
+#                                           config.toml), from a binary that passes verify. It is the one
+#                                           file in dist/release, which `bin/devbin release attach <tag>
+#                                           --from dist/release` takes whole; an ad hoc asset goes to dist/adhoc
+#   bin/devbin macos prepare [--adhoc]      stage, sign, verify the signature, notarise (a dry run with
+#                                           --adhoc), then pack, whose verify adds spctl: Gatekeeper
+#                                           refuses Developer ID code that is not notarised yet
+#
+# --adhoc signs with `codesign -s -`: no identity, no keychain, no timestamp,
+# and no spctl. It proves the steps on a scratch build; a release is never
+# ad hoc. The facts every step signs and checks against live once, in
+# packaging/macos/signing.
+#
+# IT RUNS ON THE MAINTAINER'S MAC ONLY. It refuses on CI ($CI set), off macOS,
+# and, for a real signature, when the Developer ID identity is not in the
+# keychain. The notary credentials are read from the login keychain, under
+# packaging/macos/signing's `keychain` prefix, only by a real notarize.
+
+emulate -L zsh
+setopt err_exit no_unset pipe_fail
+
+root=${0:A:h:h:h:h}
+cd $root
+signing=packaging/macos/signing
+stage=dist/macos/stage
+binaries=(cldr)
+
+die() { print -u2 "macos: $*"; exit 1 }
+step() { print -r -- "-- $*" }
+
+# A fact from packaging/macos/signing, by key
+fact() {
+  local line=${(M)${(f)"$(<$signing)"}:#$1=*}
+  [[ -n $line ]] || die "$signing has no $1"
+  print -r -- ${line#$1=}
+}
+
+guard() {
+  [[ -z ${CI:-} ]] || die "refusing to run on CI: signing happens on the maintainer's Mac only"
+  [[ $(uname) == Darwin ]] || die "signing needs macOS"
+}
+
+# security's output is captured first: grep -q under pipe_fail can lose to SIGPIPE
+require_identity() {
+  local identity=$(fact identity) found
+  found=$(security find-identity -v -p codesigning 2>/dev/null) || true
+  [[ $found == *"\"$identity\""* ]] || die "the signing identity is not in this keychain: $identity"
+}
+
+version() { sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1 }
+triple() { rustc -vV | sed -n 's/^host: //p' }
+
+cmd_stage() {
+  local b
+  for b in $binaries; do
+    [[ -e target/release/$b ]] || die "no release build of $b: run cargo build --release --locked"
+  done
+  mkdir -p $stage
+  for b in $binaries; do /usr/bin/ditto target/release/$b $stage/$b; done
+  print "staged: ${(j:, :)binaries} into $stage"
+}
+
+require_staged() {
+  local b
+  for b in $binaries; do [[ -e $stage/$b ]] || die "$stage/$b is not staged: run bin/devbin macos stage"; done
+}
+
+cmd_sign() {
+  local adhoc=$1 b
+  require_staged
+  local -a how
+  if (( adhoc )); then
+    how=(--sign - --timestamp=none)
+  else
+    require_identity
+    how=(--sign "$(fact identity)" --timestamp)
+  fi
+  for b in $binaries; do
+    step "signing $b as $(fact id.$b)"
+    # --force replaces the ad hoc signature the linker puts on every arm64 binary
+    codesign --force --options runtime $how --identifier "$(fact id.$b)" $stage/$b
+  done
+  print "signed: ${(j:, :)binaries} ($( (( adhoc )) && print ad-hoc || print Developer ID ))"
+}
+
+# The designated requirement; ad hoc has no anchor, so its requirement is the identifier alone
+requirement() {
+  local adhoc=$1 b=$2
+  if (( adhoc )); then print -r -- "identifier \"$(fact id.$b)\""; else fact requirement.$b; fi
+}
+
+cmd_verify() {
+  # gatekeeper=0 leaves out spctl, whose verdict needs the notarisation
+  local adhoc=$1 gatekeeper=${2:-1} b
+  require_staged
+  for b in $binaries; do
+    step "verifying $b"
+    codesign --verify --strict -R="$(requirement $adhoc $b)" $stage/$b ||
+      die "$b does not meet its designated requirement"
+    local flags=$(codesign -d --verbose=2 $stage/$b 2>&1 | sed -n 's/.*flags=\([^ ]*\).*/\1/p' | head -1)
+    [[ $flags == *runtime* ]] || die "$b carries no hardened runtime (flags=${flags:-unreadable})"
+    if (( ! adhoc && gatekeeper )); then
+      spctl -a -t open --context context:primary-signature $stage/$b ||
+        die "Gatekeeper refuses $b (has it been notarised?)"
+    fi
+    print "  ok: requirement, hardened runtime$( (( adhoc || ! gatekeeper )) || print ', spctl')"
+  done
+}
+
+# A notary credential from the login keychain, under the signing file's prefix
+secret() {
+  local keychain=$(fact keychain)
+  security find-generic-password -a $USER -s "$keychain.$1" -w 2>/dev/null || die "no $keychain.$1 in the login keychain"
+}
+
+cmd_notarize() {
+  local dry=$1
+  require_staged
+  local zip=dist/macos/cldr-notary.zip keychain=$(fact keychain)
+  if (( dry )); then
+    print "dry run: would zip ${(j:, :)binaries} into $zip with ditto, then run xcrun notarytool submit $zip --wait"
+    print "  (the credentials are read from the login keychain, service prefix $keychain, at submission)"
+    return
+  fi
+  require_identity
+  local b
+  for b in $binaries; do
+    codesign -dv $stage/$b 2>&1 | grep -q 'TeamIdentifier=not set' && die "$b is not Developer ID signed: run bin/devbin macos sign"
+  done
+  local payload=dist/macos/cldr-notary
+  rm -rf $payload $zip
+  mkdir -p $payload
+  for b in $binaries; do /usr/bin/ditto $stage/$b $payload/$b; done
+  /usr/bin/ditto -c -k --keepParent --sequesterRsrc $payload $zip
+  step "submitting to Apple (notarytool waits)"
+  local out
+  out=$(xcrun notarytool submit $zip --apple-id "$(secret APPLE_ID)" --password "$(secret APPLE_APP_PASSWORD)" --team-id "$(secret APPLE_TEAM_ID)" --wait 2>&1) || true
+  print -r -- $out
+  [[ $out == *"status: Accepted"* ]] || die "notarisation was not Accepted"
+  rm -rf $payload $zip
+}
+
+cmd_pack() {
+  local adhoc=$1
+  cmd_verify $adhoc >/dev/null
+  # release attach --from takes every file under its directory, so the asset
+  # is packed into a directory of its own, emptied first
+  local dir=dist/release
+  if (( adhoc )); then dir=dist/adhoc; fi
+  local asset=$dir/cldr-$(version)-$(triple).tar.gz
+  local tree=dist/macos/tree
+  rm -rf $tree $dir && mkdir -p $tree/bin $dir
+  local b
+  for b in $binaries; do /usr/bin/ditto $stage/$b $tree/bin/$b; done
+  # The example config, which the formula installs as share/cldr/config.toml
+  cp examples/config.toml $tree/config.toml
+  local out=$PWD/$asset
+  ( cd $tree && COPYFILE_DISABLE=1 tar -czf $out * )
+  rm -rf $tree
+  print "packed: $asset ($( (( adhoc )) && print 'ad-hoc: never a release asset' || print 'signed and notarised' ))"
+}
+
+guard
+sub=${1:-}
+(( $# )) && shift
+adhoc=0 dry=0
+for arg in "$@"; do
+  case $arg in
+    --adhoc) adhoc=1 ;;
+    --dry-run) dry=1 ;;
+    *) die "unknown argument: $arg" ;;
+  esac
+done
+case $sub in
+  stage) cmd_stage ;;
+  sign) cmd_sign $adhoc ;;
+  verify) cmd_verify $adhoc ;;
+  notarize) cmd_notarize $dry ;;
+  pack) cmd_pack $adhoc ;;
+  prepare)
+    cmd_stage
+    cmd_sign $adhoc
+    # The signature alone: spctl waits for pack's verify, after notarize
+    cmd_verify $adhoc 0
+    cmd_notarize $(( adhoc || dry ))
+    cmd_pack $adhoc ;;
+  # The usage block above, from its first line to the bare # after it
+  ""|-h|--help) sed -n '/^#   bin\/devbin macos stage/,/^#$/p' ${0:A} | sed -e '$d' -e 's/^# \{0,1\}//' ;;
+  *) die "unknown step: $sub (stage, sign, verify, notarize, pack, prepare)" ;;
+esac

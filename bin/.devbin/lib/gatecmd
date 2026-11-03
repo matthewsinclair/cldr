@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+#
+# lib/gatecmd -- the shared body of every built-in gate command.
+#
+# Sourced by lib/cmd/check and lib/cmd/test, which are otherwise four-line
+# shims. `check` and `test` do the same thing -- take an option, find its
+# command line, run it through the sealed-gate runner -- and writing that twice
+# is exactly the duplication this project exists to remove.
+#
+# The option's command line comes from lib/builtins unless config overrides it,
+# which is the tier-2 shape: the framework knows `check compile` exists and
+# what it usually runs, and a project that runs it differently says so in one
+# line rather than by writing a script.
+#
+# A tier-1 option -- one with real shared logic rather than a command line --
+# is marked `@builtin` in the catalogue and resolved to a function named
+# `builtin_<command>_<option>`, which the calling lib/cmd/<command> defines.
+#
+[ -n "${_DEVBIN_GATECMD_LOADED:-}" ] && return 0
+_DEVBIN_GATECMD_LOADED=1
+
+# shellcheck source=lib/helpers
+. "${DEVBIN_LIB:?run me through bin/devbin}/helpers"
+# shellcheck source=lib/builtins
+. "$DEVBIN_LIB/builtins"
+# shellcheck source=lib/runlog
+. "$DEVBIN_LIB/runlog"
+
+# run_builtin_gate <command> [option] [args...]
+#
+# The whole body of a built-in gate command. Resolution order for what to run,
+# which mirrors the dispatcher's own resolution order one level down:
+#
+#   1. a `builtin_<command>_<option>` function, when the catalogue says @builtin
+#   2. the catalogue's default command line
+#
+# Config's own `run:` never reaches here: the dispatcher routes a config-declared
+# option through run_option before a handler is consulted at all, so by the time
+# this runs the option is one devbin ships.
+# usage_options_for <command> -- the usage line's option list, |-joined.
+#
+# The ACTIVE set the dispatcher exported (issue 0007): the catalogue is the
+# menu, not what resolves in THIS project -- one project's line advertised three
+# arms that refuse, another's advertised four disabled ones and omitted the
+# only one that runs. The derivation (language axis + config enabled: + declared
+# options) lives dispatcher-side as command_options; re-deriving it here would
+# be a second copy, so this reads the export and falls back to the raw
+# catalogue only when a handler drives gatecmd outside the dispatcher.
+usage_options_for() {
+  local cmd="$1" active=""
+  case "$cmd" in
+    check) active="${DEVBIN_ACTIVE_CHECK:-}" ;;
+    clean) active="${DEVBIN_ACTIVE_CLEAN:-}" ;;
+    db) active="${DEVBIN_ACTIVE_DB:-}" ;;
+    docs) active="${DEVBIN_ACTIVE_DOCS:-}" ;;
+    fmt) active="${DEVBIN_ACTIVE_FMT:-}" ;;
+    test) active="${DEVBIN_ACTIVE_TEST:-}" ;;
+  esac
+  if [ -n "${active// /}" ]; then
+    printf '%s' "$active" | tr ' ' '\n' | sed '/^$/d' | tr '\n' '|' | sed 's/|$//'
+  else
+    builtin_options_for "$cmd" | tr '\n' '|' | sed 's/|$//'
+  fi
+}
+
+run_builtin_gate() {
+  local cmd="$1" opt="${2:-}" run suffix grammar fn dir
+  local -a words
+  shift || true
+  shift || true
+
+  case "$opt" in
+    -h | --help)
+      printf 'usage: %s %s <%s|all>\n' "${DEVBIN_INVOKE:-bin/devbin}" "$cmd" \
+        "$(usage_options_for "$cmd")"
+      return 0
+      ;;
+    "")
+      # Split from -h/--help deliberately. Asking for usage SUCCEEDED; being
+      # unable to run because no gate was named did NOT, and a gate command that
+      # exits 0 having run nothing is a false green -- `devbin test && deploy`
+      # deploys. See the longer note in run_command (lib/resolve).
+      printf 'usage: %s %s <%s|all>\n' "${DEVBIN_INVOKE:-bin/devbin}" "$cmd" \
+        "$(usage_options_for "$cmd")"
+      return 1
+      ;;
+  esac
+
+  # A MISTYPED OPTION IS TOLD THE OPTIONS, never `<cmd> all` (issue 0132). The
+  # one remedy this offered for `db migrat` was the command that ran `db reset`
+  # and dropped the database; for any gate command it offered the whole sweep
+  # in answer to a typo.
+  run="$(builtin_option_run "$cmd" "$opt")" ||
+    die "unknown $cmd option: $opt -- the options here are $(usage_options_for "$cmd" | sed 's/|/, /g') (see: ${DEVBIN_INVOKE:-bin/devbin} help $cmd)"
+  # THE SEAL IS option_seal_from's (issue 0135), the one statement of an
+  # option's seal from the row, which option_seal hands config's values for a
+  # line of the option's own. Config's own `run:` never reaches here, so it is
+  # handed nothing: the row's suffix and grammar, each through the one reading
+  # of `-` (0065, 0066). No config and no tier are needed to seal here, so a
+  # handler run without the dispatcher still reaches its own guards.
+  option_seal_from "$cmd" "$opt" "" "" suffix grammar ||
+    die "cannot resolve the seal of '$cmd $opt' -- not running it unsealed"
+
+  cd "$PROJECT_ROOT" || die "cannot enter $PROJECT_ROOT"
+
+  # Wrapper flags out of the tool's argv, purge pair to run_gate (one parser
+  # for every gate path -- see gate_split_args in lib/runlog).
+  gate_split_args "$@"
+
+  if [ "$run" = "@builtin" ]; then
+    fn="builtin_${cmd}_${opt}"
+    # A catalogue entry marked @builtin with no function behind it is a devbin
+    # packaging error, not a user error -- say which, rather than reporting an
+    # unknown option and sending the reader to look at their config.
+    command -v "$fn" >/dev/null 2>&1 ||
+      die "devbin packaging error: $cmd $opt is marked @builtin but $fn is not defined"
+    # A builtin MAY declare gate flags for THIS invocation, via an optional
+    # `<fn>_gateflags` that prints one flag per line.
+    #
+    # It exists for one question the generic dispatcher cannot answer: whether
+    # an empty run is legitimate. `run_gate` promotes a zero-exit run that
+    # executed nothing to FAILED, which is right for a suite and wrong for a
+    # gate whose corpus is a SELECTION -- `check critic` reads staged files, and
+    # a clean tree stages nothing. Only the builtin knows its own corpus, and
+    # the flags are read out of run_gate's argv, so the one place that knows has
+    # to speak BEFORE the gate starts. Afterwards is too late by construction.
+    #
+    # `--allow-empty` typed on the command line still arrives via
+    # DEVBIN_GATE_FLAGS and is unaffected; a builtin without the hook is
+    # unchanged, which is every builtin but one.
+    local -a own=()
+    if command -v "${fn}_gateflags" >/dev/null 2>&1; then
+      # Never let the hook fail the dispatch: it is an optimisation of the
+      # verdict, not a gate of its own. `|| true` is deliberate here and is not
+      # the swallowed-error pattern -- a hook that cannot decide declares
+      # nothing, and nothing is the safe answer, because it leaves the default
+      # promotion in force rather than suppressing it.
+      while IFS= read -r gf; do
+        [ -n "$gf" ] && own+=("$gf")
+      done < <("${fn}_gateflags" ${DEVBIN_GATE_ARGS[@]+"${DEVBIN_GATE_ARGS[@]}"} || true)
+    fi
+    # WHAT THIS SEAL IS OVER, said rather than left to be inferred (issue 0085):
+    # a function in this process, so there is no command line and no config key,
+    # and a reader who goes looking for one is looking for something that cannot
+    # exist. Openers that run a command line name the config key or the
+    # catalogue row it came from.
+    run_gate --label "$cmd $opt" --suffix "$suffix" --grammar "$grammar" \
+      --out-dir "$(gate_out_dir "$cmd")" \
+      --source "devbin's own builtin $fn -- a function in this process, not a command line" \
+      ${DEVBIN_GATE_FLAGS[@]+"${DEVBIN_GATE_FLAGS[@]}"} \
+      ${own[@]+"${own[@]}"} \
+      -- "$fn" ${DEVBIN_GATE_ARGS[@]+"${DEVBIN_GATE_ARGS[@]}"}
+    return $?
+  fi
+
+  # Split by run_words, deliberately not eval'd -- the same rule run_option
+  # applies to a config `run:`, for the same reason, and since issue 0082 the
+  # same helper. The catalogue is devbin's own data rather than a user's, but
+  # the two paths behaving differently would be worse than either behaviour on
+  # its own, and a handler that sources this file under a strict-mode
+  # `IFS=$'\n\t'` is where that stops being theoretical: the line would stay one
+  # word and resolve to nothing. The cd below is what the glob patterns are
+  # matched in.
+  #
+  # A RUST LINE IS RUN AT THE CARGO ROOT (issue 0225), which is the project root
+  # unless `project.cargo_root` names one below it: catalogue_line_root answers
+  # from the row's language, and the seal's `at:` line says where it ran.
+  dir="$(catalogue_line_root "$(builtin_option_lang "$cmd" "$opt")")" ||
+    die "cannot run '$cmd $opt' -- its cargo root is refused (above)"
+  cd "$dir" || die "cannot enter $dir"
+  run_words words "the catalogue's command line for '$cmd $opt'" "$run" || return 1
+  # The same phrase run_words is given for its refusal, for the same reason
+  # (issue 0085): the catalogue is devbin's own data, so there is no config key
+  # to name, and naming the row is what tells a reader where to look.
+  run_gate --label "$cmd $opt" --suffix "$suffix" --grammar "$grammar" \
+    --out-dir "$(gate_out_dir "$cmd")" \
+    --source "the catalogue's command line for '$cmd $opt', split into words by run_words, each a glob pattern (never eval'd)" \
+    ${DEVBIN_GATE_FLAGS[@]+"${DEVBIN_GATE_FLAGS[@]}"} \
+    -- "${words[@]}" ${DEVBIN_GATE_ARGS[@]+"${DEVBIN_GATE_ARGS[@]}"}
+}

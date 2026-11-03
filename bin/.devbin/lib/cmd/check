@@ -1,0 +1,1049 @@
+#!/usr/bin/env bash
+#
+# The built-in `check` command. Most options are catalogue entries with a
+# command line (compile, format, deps, clippy) and need nothing here. Others are
+# tier 1 (lib/builtins) -- real shared logic rather than a command line -- and
+# are marked `@builtin` in the catalogue, which resolves to the
+# `builtin_check_*` functions below.
+#
+set -euo pipefail
+
+# shellcheck source=lib/gatecmd
+. "${DEVBIN_LIB:?run me through bin/devbin}/gatecmd"
+
+# builtin_check_critic -- run the Intent critic for every declared language that
+# actually has a headless critic.
+#
+# Ported from the corpus, where every project carried this. What it
+# refuses to do quietly:
+#
+#   - A language declared in intent/.config/config.json with no headless critic
+#     is DROPPED from the run rather than failing it, but the whole set being
+#     empty is fatal: a critic gate with no critic behind it exits 0 having
+#     examined nothing, which is a false green.
+#   - With no arguments it defaults to --staged, and SAYS SO when nothing is
+#     staged. Where there is no git checkout it stops and says so, and where
+#     git cannot say what is staged it stops, in git's words (issue 0186): a
+#     failed `git diff --cached` read as nothing staged, and Intent's critic
+#     then failed on the same call under that diagnosis.
+#
+# ON THE EMPTY RUN. This comment used to say that examining zero files is always
+# a false green, and the code was made to match it -- correctly, because until
+# then this gate declared a grammar with no counter and could not fail that way
+# at all. But the corpus here is a SELECTION, not a suite, and the promotion
+# counts and does nothing else, so it made the ORDINARY case red. A gate that is
+# red in the ordinary case is how a gate teaches people to ignore it.
+#
+# The split, declared by `builtin_check_critic_gateflags` below:
+#
+#   the default --staged corpus -> NOT APPLICABLE if it scans nothing. Declared
+#                                  with --allow-empty, ANNOUNCED by run_gate as
+#                                  "no tests ran", and green.
+#   an explicit --files corpus  -> FAILED on zero, unchanged. The caller named
+#                                  files; examining none of them is never what
+#                                  was intended.
+#
+# WHAT THIS DELIBERATELY DOES NOT CLAIM, because the first version of it claimed
+# exactly this and was wrong in the field within the hour. It does not
+# distinguish "nothing was staged" from "things were staged but none of them
+# were code". The obvious-looking predicate -- allow empty only when `git diff
+# --cached` is empty -- FIRES ON MARKDOWN: stage a doc, and a gate about source
+# code goes red for a reason that has nothing to do with source code. Measured
+# with five .md files staged.
+#
+# Getting that right needs a language-to-extension map, and devbin has none. The
+# critic owns which files belong to which language, and a second copy of that
+# here would be a second source of truth about the one thing this gate does not
+# own. So the residual hole is stated rather than papered over: a staged file
+# that SHOULD have reached a critic and did not is invisible from outside the
+# critic, and this gate cannot see it.
+#
+# What it does buy is the half that was actually complained about three separate
+# times: the leg no longer reports a silent `ok` having examined nothing. It
+# says so. That is the rule NOT APPLICABLE IS SILENT, AND ABSENT IS LOUD, with
+# the announcement doing the work the exit code cannot.
+# builtin_check_critic_gateflags -- declare, BEFORE the gate starts, whether an
+# empty run is legitimate for THIS invocation. Prints gate flags, one per line;
+# printing nothing leaves run_gate's default promotion in force.
+#
+# Called by run_builtin_gate (lib/gatecmd) with the same argv the builtin will
+# receive. Argv is the whole test, and that is the point: it separates a corpus
+# the caller CHOSE from one that defaulted to --staged, which is the only part
+# of this question devbin can answer without owning a language map it does not
+# own.
+#
+# Deliberately silent about WHY it is empty. The announcement is run_gate's
+# ("no tests ran (--allow-empty)") and the builtin's own warn; a third voice
+# saying the same thing in a different place is how the reason and the verdict
+# drift apart.
+builtin_check_critic_gateflags() {
+  # An explicit corpus is never legitimately empty -- the caller named files and
+  # expects them examined -- so say nothing and let the promotion stand.
+  [ $# -eq 0 ] || return 0
+  # The default corpus may legitimately hold nothing a critic reads. Whether it
+  # does is known to the critic, not to this gate; see the header.
+  printf '%s\n' '--allow-empty'
+  return 0
+}
+
+builtin_check_critic() {
+  require_tool intent "Install Intent: see intent/docs at the Intent install"
+  require_tool jq "brew install jq, or apt-get install jq"
+
+  local declared headless langs="" lang rc=0 hl_rc=0 jq_rc=0 cfg staged why
+  cfg="$PROJECT_ROOT/intent/.config/config.json"
+  # THREE CONDITIONS, THREE DIAGNOSES (issue 0016). The `|| true` here collapsed
+  # an ABSENT config, an UNPARSEABLE one, and a genuinely EMPTY `languages` array
+  # into a single message -- and that message is right about exactly one of the
+  # three, so it offered `intent lang init <lang>` to someone whose config is
+  # missing or malformed. Measured: jq exits 2 on an absent file, 5 on a parse
+  # error, and 0 on `[]`. The status distinguishing them was there to be read.
+  #
+  # This line survived the sweep that fixed the one below it, in the same
+  # function, four lines apart. A sweep looks for the reported SHAPE; this one
+  # wears `|| true` where that one wore a discarded `$?`.
+  [ -f "$cfg" ] ||
+    die "no config at $cfg -- run this from an Intent project root (PROJECT_ROOT is $PROJECT_ROOT)"
+  declared="$(jq -r '(.languages // []) | .[]' "$cfg" 2>/dev/null)" || jq_rc=$?
+  [ "$jq_rc" -eq 0 ] ||
+    die "could not parse $cfg (jq exit $jq_rc) -- the config is not valid JSON. This is NOT an absence of declared languages."
+  [ -n "$declared" ] ||
+    die "no languages declared in intent/.config/config.json (intent lang init <lang>)"
+  # "NO LANGUAGE HAS A HEADLESS CRITIC" AND "THE TOOL THAT LISTS THEM DID NOT
+  # ANSWER" ARE DIFFERENT ABSENCES (issue 0016).
+  # `|| true` discarded the status, so a CLI that cannot answer produced an empty
+  # list, which produced an empty `langs`, which died naming the wrong cause --
+  # blaming the project's language declarations for a failure of the tool. It
+  # fails closed, so nothing was ever silently skipped; the cost is a wrong
+  # diagnosis at exactly the moment it is most expensive, since the known trigger
+  # is a v3 binary shadowing v2 on PATH.
+  headless="$(intent critic --languages 2>/dev/null)" || hl_rc=$?
+  [ "$hl_rc" -eq 0 ] ||
+    die "\`intent critic --languages\` failed (exit $hl_rc) -- cannot tell which languages have a headless critic. The tool did not answer; this is not an absence of critics. Check which \`intent\` is on PATH: a second install shadowing the expected one is the known cause."
+
+  for lang in $declared; do
+    case "
+$headless
+" in *"
+$lang
+"*) langs="$langs $lang" ;; esac
+  done
+  [ -n "$langs" ] ||
+    die "none of the declared languages ($(printf '%s' "$declared" | tr '\n' ' ')) has a headless critic"
+
+  if [ $# -eq 0 ]; then
+    set -- --staged
+    # A FAILED `git diff --cached` IS NO EMPTY ONE (issue 0186). Over an index
+    # git cannot read it fails, and was read as nothing staged. Where there is
+    # no repository at all, git takes `diff` for `diff --no-index`, which has no
+    # --cached, so that is said first, in devbin's words. The call is a plain
+    # git, as Intent's critic asks it, an inherited GIT_INDEX_FILE included --
+    # a commit hook's own index -- and git's reason is asked of the same index.
+    if git_repo_absent "$PROJECT_ROOT"; then
+      die "$PROJECT_ROOT is not a git checkout, so nothing can be staged and the critic was not run (pass --files <path>, once per file)"
+    fi
+    if ! staged="$(git -C "$PROJECT_ROOT" diff --cached --name-only 2>/dev/null)"; then
+      why="$(git_failure_line --plain "$PROJECT_ROOT" diff --cached --name-only)"
+      die "git could not say what is staged in $PROJECT_ROOT, so the critic was not run${why:+ -- $why}"
+    fi
+    if [ -z "$staged" ]; then
+      warn "nothing staged -- the critic will examine NO files, which is not a failure here (stage changes, or pass --files <path>, once per file)"
+    fi
+  fi
+
+  for lang in $langs; do
+    printf '    %s\n' "$lang"
+    intent critic "$lang" "$@" || rc=1
+  done
+  return "$rc"
+}
+
+# builtin_check_format -- verify formatting in every language the project
+# declares, one arm per declared language (issue 0003).
+#
+# It used to be a catalogue command line, `mix format --check-formatted`, scoped
+# to elixir. `fmt` has an arm per formattable language; this had one. So in a
+# mixed project -- say elixir + rust + swift -- declaring Elixir activated a
+# gate NAMED `format`, summarised "Formatting is up to date", that never looked
+# at Rust or Swift.
+# Same exit code, same empty seal, two thirds of the project unexamined.
+#
+# Shaped after `builtin_check_critic` above, which had already answered the same
+# question for rule-checking: `any` in the catalogue, one pass per declared
+# language, nothing offered that the project did not ask for.
+#
+# THE MISSING-TOOL RULE IS INVERTED FROM `fmt`, deliberately, and this is the
+# one place the asymmetry is implemented rather than described. `fmt` skips a
+# missing formatter loudly and exits 0, because it asserts no verdict. A gate
+# does assert one, so a missing tool is a FAILURE -- exiting 0 having examined
+# nothing is the false green this whole file exists to refuse.
+# _fmt_arm_state <lang> -- how the dispatcher said to treat this language's
+# fmt arm: `builtin`, `overridden` or `disabled` (DEVBIN_FMT_ARMS, bin/devbin).
+# A language with no entry has no fmt arm at all; it defaults to `builtin`,
+# which builtin_fmt_check_run then declines -- same outcome, and no invented
+# claim about config.
+_fmt_arm_state() {
+  local lang="$1" pair
+  for pair in ${DEVBIN_FMT_ARMS:-}; do
+    case "$pair" in
+      "$lang"=*)
+        printf '%s' "${pair#*=}"
+        return 0
+        ;;
+    esac
+  done
+  printf 'builtin'
+  return 0
+}
+
+builtin_check_format() {
+  local lang cmd rc=0 ran=0 dir
+  local -a words
+
+  # This gate verifies whole trees, one arm per declared language. It used to
+  # take arguments and silently DROP them: as a catalogue command line the
+  # arguments reached the tool (`check format lib/foo.ex` scoped the elixir
+  # check), so the same invocation now appearing to work while checking
+  # everything -- or nothing the caller meant -- is a scoped check that never
+  # happened.
+  [ $# -eq 0 ] ||
+    die "check format takes no arguments (got: $*)
+       It verifies EVERY declared language's whole tree. Scope a single
+       language with its own tool instead, eg 'mix format --check-formatted <path>'."
+
+  # UNSET is not the same fact as EMPTY, and the difference decides whether this
+  # gate may pass. The dispatcher is the only thing that exports
+  # DEVBIN_LANGUAGES and DEVBIN_FMT_ARMS, always, possibly empty. So:
+  #
+  #   unset  -- this was reached some other way and the gate never learned what
+  #             to check. "No formattable language declared" would be a verdict
+  #             about the PROJECT standing in for a fact about the INVOCATION,
+  #             which is a gate passing because it does not know any better.
+  #   empty  -- the project genuinely declares no formattable language. A
+  #             determinate fact, reported below, and it passes.
+  #
+  # The first version of this fix collapsed both into "nothing to check" and
+  # passed for a project declaring elixir. `builtin_check_critic` above already
+  # dies in this situation, so the two adjacent gates were answering one
+  # failure in opposite directions.
+  if [ -z "${DEVBIN_LANGUAGES+set}" ] || [ -z "${DEVBIN_FMT_ARMS+set}" ]; then
+    die "DEVBIN_LANGUAGES / DEVBIN_FMT_ARMS not set -- run this through bin/devbin
+       Reporting 'nothing to check' here would be a verdict about the project,
+       and this is a fact about the invocation."
+  fi
+
+  for lang in ${DEVBIN_LANGUAGES:-}; do
+    case "$(_fmt_arm_state "$lang")" in
+      disabled)
+        # The project's own `enabled: false`. A determinate config fact, so it
+        # passes -- reported rather than silently absent, same rule as the
+        # zero-file report below.
+        printf '    %s -- fmt arm disabled in config, not checked\n' "$lang"
+        continue
+        ;;
+      overridden)
+        # The project runs `fmt <lang>` -- config's own `run:` for it, or the
+        # project owning `fmt` whole (issue 0128) -- and this gate derives its
+        # check from the CATALOGUE, so the fmt / check format pairing would hold
+        # in name only: the gate green-lighting a command line the formatter no
+        # longer runs. No guessing a check flag onto a
+        # command devbin does not know; the project states the check side too.
+        die "cannot verify $lang formatting -- 'fmt $lang' runs the project's own formatter here, not the catalogue's
+       The catalogue-derived check would verify a DIFFERENT command line from
+       the one 'fmt $lang' actually runs. Declare the check side as well:
+       commands.check.options.format.run."
+        ;;
+    esac
+    cmd="$(builtin_fmt_check_run "$lang" 2>/dev/null)" || continue
+    ran=1
+    step "format -- $lang"
+    if [ "$cmd" = "@builtin" ]; then
+      _check_format_swift || rc=1
+      continue
+    fi
+    # AT THE DIRECTORY ITS LANGUAGE'S LINES RUN IN (issue 0225), from
+    # catalogue_line_root: the project root, where run_builtin_gate has already
+    # cd'd, or for rust the cargo root, which the arm names when it is not the
+    # root. In a subshell, so the next arm starts at the project root.
+    if ! dir="$(catalogue_line_root "$lang")"; then
+      rc=1
+      continue
+    fi
+    [ "$dir" = "$PROJECT_ROOT" ] || printf '    at %s\n' "$dir"
+    # Split by run_words: a catalogue command line, read the way every other one
+    # is, and never eval'd (issue 0082's one helper), its words matched in the
+    # directory it runs in.
+    (
+      cd "$dir" || die "cannot enter $dir"
+      run_words words "the catalogue's format check for '$lang'" "$cmd" || exit 1
+      "${words[@]}"
+    ) || rc=1
+  done
+
+  # No formattable language declared. Devbin itself is this case -- it declares
+  # `shell`, which has no formatter to point at -- and it is a determinate fact
+  # about the project rather than a run that went wrong, so it is reported and
+  # passes. That is NOT in tension with the missing-tool rule above: there the
+  # gate could not check something it was asked to; here it was asked to check
+  # nothing.
+  if [ "$ran" = 0 ]; then
+    printf '    no formattable language declared -- nothing to check\n'
+  fi
+  return "$rc"
+}
+
+# _check_format_swift -- the non-mutating twin of builtin_fmt_swift, over the
+# same file set with the `lint` subcommand instead of `format --in-place`. A
+# missing swift-format is a gate failure, where `fmt swift` skips.
+#
+# SUBCOMMAND, not a flag. This read `swift-format --lint` from the day it was
+# written until ST0002 WP-08, and that is not an option swift-format has ever
+# had -- the tool dispatches on a subcommand (`lint`, or `format` as the
+# default), so the flag was being parsed as an unknown option OF `format`. It
+# survived two reviews of this function because devbin's own repository has no
+# .swift files: the determinate-zero path below returns green before reaching
+# the command line, so the gate had never once executed it. A legitimate empty
+# run is still a run that proves nothing about the non-empty one.
+#
+# `--strict` is the other half, and it is the half that matters. `swift-format
+# lint` exits 0 WITH findings -- they are warnings unless promoted -- so
+# correcting the subcommand alone produced a gate that examined 78 files,
+# printed 633 findings, and sealed GREEN. That is a worse defect than the one
+# it replaced, because a hard error announces itself and a false green does
+# not, and it is exactly what the seal is for: the terminal was full of
+# findings and tmp/check/<stamp>.FORMAT.errors was empty. Read the seal.
+#
+# IT REPORTS HOW MANY FILES IT EXAMINED, and that is not decoration. The first
+# version ran the linter through a pipeline that runs nothing at all when the
+# find matches nothing (macOS xargs does not run the utility on empty input),
+# so it printed its step header and exited 0 having looked at no file -- the
+# cardinal false green, in a gate written the same afternoon. Zero files still
+# PASSES, because it is a determinate fact rather than a run that went wrong;
+# what it may not do is be silent, which is the same rule `doctor` follows
+# when it reports how many checks ran.
+#
+# NUL-delimited end to end, like builtin_fmt_swift: an intermediate
+# newline-joined string (`tr '\n' '\0'` over $(find)) split a path containing
+# a newline into two bogus arguments and counted it twice, so the twins
+# disagreed about the file set the whole fmt / check format pairing is about.
+_check_format_swift() {
+  local n
+  command -v swift-format >/dev/null 2>&1 ||
+    die "swift-format not found, so Swift formatting cannot be verified (brew install swift-format; on Linux it ships with the Swift toolchain, swift.org/install)
+       'fmt swift' skips a missing formatter because it claims no verdict; a gate cannot."
+
+  # READ WHOLE, WITH ITS STATUS, AND A PARTIAL LIST FAILS THE GATE (issue
+  # 0139). find's error reached the screen, but its status was lost in a
+  # process substitution, so a file beneath a directory it could not read went
+  # unlinted and the gate passed. find_list reads the list whole, NUL-separated.
+  #
+  # BUILD DIRECTORIES ARE PRUNED, NOT FILTERED (issue 0139). `-not
+  # -path` kept their files out of the list and walked into them all the same,
+  # where a build running beside the check creates and deletes as it goes, and
+  # an entry that vanished between listing and reading failed the walk: `check
+  # format` went red in 2 of 20 runs with a writer in .build/ (measured).
+  # -ignore_readdir_race covers the rest of the tree, as it does in clean. The
+  # file set is the same, and fmt's twin below keeps it.
+  local -a files=()
+  if ! find_list files . -ignore_readdir_race \
+    \( -type d \( -name build -o -name .build -o -name Carthage \) \) -prune -o \
+    -name '*.swift' -print0; then
+    die "check format swift: could not list every Swift file (the error above names it) -- a gate over part of them is not a pass"
+  fi
+
+  n="${#files[@]}"
+  printf '    %s file(s)\n' "$n"
+  [ "$n" -gt 0 ] || return 0
+
+  swift-format lint --strict "${files[@]}"
+}
+
+# builtin_check_toolchain -- the pinned toolchain must match what is running.
+#
+# Ported from projects that had substantially the same function. CI resolves its
+# compiler from .tool-versions; local work uses whatever the shell resolves.
+# When those diverge, a local warnings-as-errors pass stops being evidence about
+# CI, so this makes the skew loud rather than silent.
+builtin_check_toolchain() {
+  local tv="$PROJECT_ROOT/.tool-versions" rc=0
+  # Same rule as check format above: arguments used to vanish without a word,
+  # which reads as a scoped check that never happened.
+  [ $# -eq 0 ] ||
+    die "check toolchain takes no arguments (got: $*)
+       It compares .tool-versions against the running toolchain, whole-project."
+  # A MISSING .tool-versions IS THE SAME DETERMINATE FACT AS A PRESENT ONE THAT
+  # PINS NOTHING, AND THIS FUNCTION ALREADY REPORT-AND-PASSES ON THE SECOND.
+  # Further down, a file with no elixir/erlang pin warns "nothing to
+  # compare" and returns 0. No file at all was `die`-ing -- so one gate answered
+  # "this project declares no pin" in two opposite ways depending on whether the
+  # project expressed it by omitting a line or by omitting a file.
+  #
+  # `builtin_check_format` above settles which way is right: it treats a
+  # determinate "nothing to check" as REPORT AND PASS, on the grounds that it is
+  # a fact about the PROJECT rather than a run that went wrong. The distinction
+  # that matters there is UNSET versus EMPTY, and it applies here unchanged --
+  # absent-and-determinate is not the same as could-not-tell.
+  #
+  # WHY IT MATTERS BEYOND TIDINESS: `check toolchain` is an arm of `check all`,
+  # the one command a developer runs to ask "is anything wrong". A project
+  # that legitimately pins nothing got a PERMANENT red for a reason that could
+  # never change, and a permanently-red aggregate is worse than a slow one --
+  # a slow gate gets bypassed, an always-red gate gets ignored, and the real
+  # failure then hides inside the noise. That is what was measured:
+  # clippy, format and critic all passed; toolchain was the whole
+  # of the red, on every run, forever.
+  #
+  # THIS DOES NOT WEAKEN THE GATE. Its subject is SKEW between a pin and what is
+  # running, and a project with no pin has no skew to have. It still fails on a
+  # pin that disagrees with the live toolchain, which is the whole reason it
+  # exists. What it stops doing is reporting the ABSENCE of a policy as a
+  # violation of one.
+  if [ ! -f "$tv" ]; then
+    printf '    no .tool-versions -- this project declares no toolchain pin\n'
+    return 0
+  fi
+
+  local pin_ex pin_erl pin_erl_full live_ex live_erl erl_root otp_file coarse=0
+  local dockerfile img_ex img_erl
+  # Anchored on `^elixir ` / `^erlang `: an unanchored match hits a comment line
+  # too, and these files have them. The elixir pin may carry an -otp-NN suffix;
+  # compare the bare version, which is the substring CI extracts.
+  pin_ex="$(awk '/^elixir / { split($2, a, "-"); print a[1]; exit }' "$tv")"
+  pin_erl="$(awk '/^erlang / { print $2; exit }' "$tv")"
+  # The FULL erlang pin, kept aside: the coarse fallback below truncates
+  # pin_erl to its major for the ACTIVE comparison, and the Dockerfile
+  # comparison must not inherit that weakening -- the image tag is exact, so
+  # 29.0.4 vs 29.0.5 is a different image and must be caught (one ported copy
+  # carried this; where ported copies differ, the strongest is taken).
+  pin_erl_full="$pin_erl"
+
+  if [ -z "$pin_ex" ] && [ -z "$pin_erl" ]; then
+    warn "no elixir or erlang pin in $tv -- nothing to compare"
+    return 0
+  fi
+
+  if [ -n "$pin_ex" ]; then
+    require_tool elixir "Install via asdf/mise per .tool-versions"
+    live_ex="$(elixir --version 2>/dev/null)"
+    live_ex="$(awk '/^Elixir / { print $2; exit }' <<<"$live_ex")"
+    if [ "$pin_ex" != "$live_ex" ]; then
+      warn "elixir: .tool-versions pins $pin_ex, the active toolchain is ${live_ex:-unknown}"
+      rc=1
+    else
+      printf '    elixir   %s\n' "$live_ex"
+    fi
+  fi
+
+  if [ -n "$pin_erl" ]; then
+    # Erlang's FULL version lives in $ROOT/releases/*/OTP_VERSION.
+    # `erlang:system_info(otp_release)` gives only the major, which cannot tell
+    # 28.1 from 28.3 -- ie it would miss exactly the drift this exists to catch.
+    # Fall back to the major only if the file is unreadable, and SAY the
+    # comparison was coarse rather than silently weakening the gate.
+    erl_root="$(erl -noshell -eval 'io:format("~s", [code:root_dir()]), halt().' 2>/dev/null || true)"
+    # `| head -1` was here. Under pipefail a reader that exits early strands the
+    # writer with SIGPIPE and 141 becomes the pipeline's status, which `set -e`
+    # turns into an abort of the whole gate. Take the first line in bash instead.
+    #
+    # find's error is shown, not sent to /dev/null (issue 0139): the fallback
+    # below says the comparison was coarse, and the error says why. It runs only
+    # where there is a releases/ to read, so an erl that is absent, or reports no
+    # root, falls back without a find error standing in for the reason. And
+    # -maxdepth comes first, since GNU find warns when it follows a test, which
+    # the /dev/null hid.
+    otp_file=""
+    if [ -n "$erl_root" ] && [ -d "$erl_root/releases" ]; then
+      # find-status: dropped -- the fallback below says the comparison was coarse, and find's error says why.
+      otp_file="$(find_walk "$erl_root/releases" -maxdepth 2 -name OTP_VERSION -print)" || :
+    fi
+    otp_file="${otp_file%%$'\n'*}"
+    if [ -n "$otp_file" ] && [ -r "$otp_file" ]; then
+      live_erl="$(tr -d '[:space:]' <"$otp_file")"
+    else
+      live_erl="$(erl -noshell -eval 'io:format("~s", [erlang:system_info(otp_release)]), halt().' 2>/dev/null || true)"
+      pin_erl="${pin_erl%%.*}"
+      coarse=1
+    fi
+    if [ "$pin_erl" != "$live_erl" ]; then
+      warn "erlang: .tool-versions pins $pin_erl, the active toolchain is ${live_erl:-unknown}"
+      rc=1
+    else
+      printf '    erlang   %s\n' "$live_erl"
+    fi
+    if [ "$coarse" = 1 ]; then
+      warn "erlang comparison was COARSE (major only) -- OTP_VERSION was unreadable, so 28.1 vs 28.3 would not have been caught"
+    fi
+  fi
+
+  # The pins' SECOND consumer, and the one that SHIPS (promoted from the
+  # config scripts of the projects that had it, at WP-11 close -- AC-11.11). A
+  # deploy image restates the pins as literal ARG defaults, because FROM needs
+  # the value before any RUN could read a file -- so a bump to .tool-versions
+  # moves CI while leaving production on the old compiler, with every other gate
+  # green. One project's image lagged that way twice before its script grew this
+  # arm.
+  #
+  # Three determinate shapes (the two-shapes doctrine):
+  #   Dockerfile present      -> compare its ARGs against the pins, exactly
+  #   fly.toml, no Dockerfile -> FAIL: this project deploys an image, so a
+  #                              comparison that cannot run is not a pass
+  #                              (the strictness those scripts authored,
+  #                              derived from the repo instead of config)
+  #   neither                 -> informative: no deploy image exists
+  dockerfile="$PROJECT_ROOT/Dockerfile"
+  if [ -f "$dockerfile" ]; then
+    img_ex="$(awk -F= '/^ARG ELIXIR_VERSION=/ { print $2; exit }' "$dockerfile")"
+    img_erl="$(awk -F= '/^ARG OTP_VERSION=/ { print $2; exit }' "$dockerfile")"
+    # An unreadable ARG is reported, never skipped: a silent empty match here
+    # would turn the arm into one that passes for every possible Dockerfile.
+    if [ -z "$img_ex" ] || [ -z "$img_erl" ]; then
+      warn "could not read ARG ELIXIR_VERSION / ARG OTP_VERSION from $dockerfile -- the deploy image is UNCHECKED against the pin"
+      rc=1
+    else
+      printf '    image    elixir %s / otp %s\n' "$img_ex" "$img_erl"
+      if [ -n "$pin_ex" ] && [ "$pin_ex" != "$img_ex" ]; then
+        warn "image: .tool-versions pins elixir $pin_ex, the Dockerfile builds $img_ex -- CI and the deploy image would compile on different compilers"
+        rc=1
+      fi
+      if [ -n "$pin_erl_full" ] && [ "$pin_erl_full" != "$img_erl" ]; then
+        warn "image: .tool-versions pins erlang $pin_erl_full, the Dockerfile builds $img_erl"
+        rc=1
+      fi
+    fi
+  elif [ -f "$PROJECT_ROOT/fly.toml" ]; then
+    warn "fly.toml with no Dockerfile -- this project deploys an image, and a pin-vs-image comparison that cannot run is not a pass"
+    rc=1
+  else
+    printf '    image    (no Dockerfile -- no deploy image to compare)\n'
+  fi
+
+  return "$rc"
+}
+
+
+# _autotests_targets <crate dir> <array> -- the test targets cargo's
+# auto-discovery makes of the crate's tests/, into the named array, by asking
+# cargo's own question of each undotted entry directly in tests/ (issue 0139;
+# re-driven with cargo metadata, cargo 1.98.1): a real directory, not a link,
+# is a target when <entry>/main.rs exists, which the filesystem answers under
+# its own case rules and through a link, as cargo asks it; any other entry is
+# a target when it is named *.rs -- a file, a link to one, a link naming nothing
+# or naming a directory. A dotted entry is never read. tests/ itself is read
+# through a link (-H). It dies, naming what it could not read, when find could
+# not list tests/ whole or a subdirectory cannot be searched: a count over part
+# of it is not a verdict. One home for both branches' counts.
+_autotests_targets() {
+  local -n _at_out="$2"
+  local -a _at_ent=()
+  local _at_e
+  find_list _at_ent -H "$1/tests" -mindepth 1 -maxdepth 1 ! -name '.*' -print0 ||
+    die "check autotests: could not read $1/tests (the error above names it) -- a verdict over part of it is not a pass"
+  _at_out=()
+  for _at_e in "${_at_ent[@]}"; do
+    if [ -d "$_at_e" ] && [ ! -L "$_at_e" ]; then
+      [ -x "$_at_e" ] ||
+        die "check autotests: could not read $1/tests whole: cannot search $_at_e, so whether it holds a main.rs, a target of its own, is unknown -- a verdict over part of it is not a pass"
+      [ ! -e "$_at_e/main.rs" ] || _at_out+=("$_at_e")
+    else
+      case "$_at_e" in *.rs) _at_out+=("$_at_e") ;; esac
+    fi
+  done
+  return 0
+}
+
+# builtin_check_autotests -- one test target per crate.
+#
+# Cargo's `autotests` defaults to TRUE, so every .rs file directly under a
+# crate's tests/ becomes its own test target: a separate binary and a separate
+# FULL LINK of the crate plus its whole dependency graph. The cost is linear in
+# FILE COUNT, not in test count, and it is silent in BOTH directions -- nothing
+# says anything when target #2 appears, and nothing says anything at #257.
+# One project reached 257 targets one honest file at a time, holding a 113G
+# target tree; consolidated it builds 5.
+# This gate catches target #2.
+#
+# WHY THIS READS THE FILESYSTEM RATHER THAN BUILDING THE TARGETS, WHICH LOOKS
+# LIKE THE DOCUMENTED TRAP AND IS NOT IT. The rule's own note is emphatic that
+# test FILES are not cargo TARGETS, and that `cargo test --workspace --no-run |
+# grep -c 'Executable tests/'` is the only count that is not a proxy. That is a
+# rule about a CENSUS -- an instrument reporting how many targets a crate HAS.
+# This gate never asks that.
+# Its predicate is "is auto-discovery on, AND is there more than one target for
+# it to discover", and both halves are decidable from Cargo.toml and the
+# filesystem alone, by cargo's own discovery rule (_autotests_targets): each .rs
+# entry directly in tests/, and each subdirectory there holding a main.rs:
+#
+#   autotests = false          -> the crate declares its own targets. COMPLIANT.
+#   absent or true, <= 1 found -> at most one auto target.          COMPLIANT.
+#   absent or true, >  1 found -> exactly that many auto targets.   BREACH.
+#
+# The trap's own worked example confirms the split instead of threatening it:
+# one project's `testkit` greps zero `[[test]]` while cargo reports 1, because a
+# single file with no autotests key is auto-discovered -- and one target is
+# precisely what this gate passes. The expensive count is needed for REPORTING,
+# never for the verdict.
+#
+# That is what keeps this at check speed, and the alternative is self-defeating:
+# `cargo test --no-run` BUILDS every test target in order to count them, which
+# is the expensive half of the build this whole gate exists to shrink. A gate
+# that must link the test graph to decide whether the test graph is too big is
+# a gate people switch off.
+builtin_check_autotests() {
+  local rc=0 crates=0 breaches=0 manifest dir n rel walk walkrc=0
+  local -a targets=()
+  local pruned="target .git .worktrees deps node_modules"
+  [ $# -eq 0 ] ||
+    die "check autotests takes no arguments (got: $*)
+       It reads every crate in the project, whole-project."
+
+  # THE PRUNE LIST IS THE DEFINITION OF WHAT THIS GATE LOOKED AT, NOT AN
+  # OPTIMISATION, so it is printed with the verdict rather than left in here to
+  # be discovered. Some entries are correctness rather than speed:
+  #
+  #   target/     -- crate sources vendored under a build tree are not ours, and
+  #                  a gate that walked them would report breaches in other
+  #                  people's code that nobody here can fix.
+  #   .worktrees/ -- a git worktree is the SAME crate seen a second time. A
+  #                  census once counted each crate once per worktree copy of
+  #                  it; a gate doing that reports one breach
+  #                  per checkout of a single Cargo.toml.
+  #
+  # A WALK THAT ERRORED RETURNS NO CRATES, AND NO CRATES READS EXACTLY LIKE A
+  # COMPLIANT PROJECT. So find's status is checked rather than discarded: this
+  # is the one failure this gate could have that would look like success, and
+  # `2>/dev/null` on the walk is what would have hidden it.
+  walk="$(find_walk "$PROJECT_ROOT" \
+    \( -name target -o -name .git -o -name .worktrees -o -name deps -o -name node_modules \) -prune -o \
+    -name Cargo.toml -type f -print)" || walkrc=$?
+  [ "$walkrc" -eq 0 ] ||
+    die "check autotests: the crate walk FAILED (exit $walkrc; the error above names it).
+       Refusing to report a verdict: a walk that errored finds no crates, and
+       no crates is indistinguishable from a project that is fully compliant."
+
+  local -a found=()
+  while IFS= read -r manifest; do
+    [ -n "$manifest" ] && found+=("$manifest")
+  done <<EOF
+$walk
+EOF
+
+  # A DETERMINATE ZERO IS REPORTED AND PASSES, which is the rule
+  # builtin_check_format and builtin_check_toolchain above already settled: a
+  # fact about the PROJECT is not a run that went wrong. It is distinguishable
+  # from the error case only because the walk's status was checked above.
+  if [ "${#found[@]}" -eq 0 ]; then
+    printf '    no Cargo.toml found (pruned: %s)\n' "$pruned"
+    printf '    this project declares rust and ships no crates -- nothing to check\n'
+    return 0
+  fi
+
+  for manifest in "${found[@]}"; do
+    dir="$(dirname "$manifest")"
+    [ -d "$dir/tests" ] || continue
+    crates=$((crates + 1))
+    rel="${dir#"$PROJECT_ROOT"/}"
+    [ "$rel" = "$dir" ] && rel="."
+    # `autotests` is a bare TOML key, so whitespace around the `=` is the only
+    # variation there is to allow for.
+    if grep -Eq '^[[:space:]]*autotests[[:space:]]*=[[:space:]]*false' "$manifest"; then
+      # WHAT "ONE TARGET PER CRATE" ACTUALLY POLICES, because the literal
+      # reading is wrong and the project that wrote the rule is the proof. A
+      # review raised that this branch counted nothing, so `autotests = false`
+      # with ten [[test]] blocks passed while cargo reported ten targets -- a real
+      # divergence from the rule's NAME. But the project that wrote the rule keeps
+      # TWO targets in two crates on purpose (one test mutates process cwd,
+      # another drives a per-process watch stream, and merged targets are
+      # threads in one process), so a `> 1 is a breach` rule turns
+      # the project that wrote the rule red on a documented choice. A gate
+      # red in the ordinary case is how a gate teaches people to ignore it.
+      #
+      # The defect being policed is SILENT GROWTH, not arithmetic. Auto-discovery
+      # adds a target when somebody adds a file and tells nobody; a [[test]]
+      # block is a deliberate line in a manifest that a reviewer sees. So
+      # declared blocks pass at any count, and the count is REPORTED so a reader
+      # can see what they are passing.
+      n="$(grep -cE '^[[:space:]]*\[\[test\]\]' "$manifest" || true)"
+      # The targets auto-discovery WOULD make, from the one helper both branches
+      # ask (issue 0139): a tests/ reached through a link is read through it,
+      # one it cannot read refuses a verdict, and the count is cargo's own.
+      _autotests_targets "$dir" targets
+      if [ "$n" -eq 0 ] && [ "${#targets[@]}" -gt 0 ]; then
+        # THE QUIET HOLE, IN ITS LOUDEST FORM, and the one case here that IS
+        # unambiguous. Discovery off, nothing declared, files sitting in tests/:
+        # compiled by nobody, run in no suite. They pass by not existing, which
+        # is the failure mode consolidation inverts rather than removes.
+        warn "$rel: autotests = false and NO [[test]] declared, but tests/ holds .rs files -- nothing compiles them."
+        breaches=$((breaches + 1))
+        rc=1
+      else
+        printf '    %-40s declared (autotests = false, %s target(s))\n' "$rel" "$n"
+      fi
+      continue
+    fi
+    # THE COUNT IS CARGO'S OWN RULE, NOT A DEPTH GUESS: cargo auto-discovers
+    # each .rs entry directly under tests/ and each subdirectory there holding
+    # a main.rs, one target of several files; any other subdirectory is a
+    # module of something. This said a subdirectory was never a target, and a
+    # crate whose only target was tests/multi/main.rs passed as holding none
+    # (issue 0139). _autotests_targets asks cargo's
+    # question of each entry, as cargo asks it, rather than matching names.
+    _autotests_targets "$dir" targets
+    n="${#targets[@]}"
+    if [ "$n" -gt 1 ]; then
+      warn "$rel: $n auto-discovered test targets -- $n full links of this crate and its whole dependency graph. Set 'autotests = false' and declare one [[test]] whose suite.rs carries the rest as #[path] modules."
+      breaches=$((breaches + 1))
+      rc=1
+    else
+      printf '    %-40s %d auto target\n' "$rel" "$n"
+    fi
+  done
+
+  # THE CORPUS IS ASSERTED RATHER THAN ASSUMED. An empty walker is silent and an
+  # empty parser is loud, and only one of those is safe -- so the count this
+  # gate examined is printed on every path, including the ones that pass.
+  if [ "$crates" -eq 0 ]; then
+    printf '    %d crate(s), none with a tests/ directory -- nothing to check\n' "${#found[@]}"
+    return 0
+  fi
+  printf '    %d crate(s) with tests/, %d in breach (pruned: %s)\n' \
+    "$crates" "$breaches" "$pruned"
+  return "$rc"
+}
+
+
+# builtin_check_targetdir -- the cargo target directory is the shared one.
+#
+# 52G of one project's 113G target tree was private FORKS (one of 41G, another
+# of 11G, a third of 919M): separate CARGO_TARGET_DIR trees, one per build user,
+# each a full copy of the same build.
+#
+# THIS IS NOT A DISCIPLINE PROBLEM AND THE GATE MUST NOT READ LIKE IT THINKS IT
+# IS. Cargo's build lock works correctly and INVISIBLY, so a blocked build is
+# indistinguishable from a hung one -- there is no output either way. A
+# developer waiting on the lock reasonably concludes it has hung and "fixes" it
+# by pointing CARGO_TARGET_DIR somewhere private, and one reported doing so
+# permanently, to be "one contender off the shared lock". An instance happened
+# while this was being measured: one `cargo check` held the lock, a test run
+# queued behind it, and the tests were reported as looking hung. They were not.
+#
+# So the fork is a RATIONAL RESPONSE TO AN INVISIBLE WAIT, and a prohibition
+# only holds if the wait is made visible -- both halves or neither. The visible
+# half is a heartbeat around long silent operations, which lives in the gate
+# runner rather than here. Until that lands this arm still earns its place, on
+# the narrower ground that a fork is currently invisible too: nothing anywhere
+# reports that a machine is holding N copies of one build tree. The message
+# below therefore names the CAUSE and not just the rule, because a gate that
+# tells a developer to stop doing the only thing that made a hang legible to
+# them is a gate they will switch off.
+# _targetdir_home_tree <tree-var> <rc-var> -- the machine's reading
+# (cargo_home_build_dir) into <tree-var> and its status into <rc-var>, asked of
+# cargo once per run: <rc-var> is empty until it has been. Every reader in
+# check targetdir takes it from here, so one run never reads it two ways.
+_targetdir_home_tree() {
+  local -n _tht_tree="$1" _tht_rc="$2"
+  [ -z "$_tht_rc" ] || return 0
+  _tht_rc=0
+  cargo_home_build_dir _tht_tree || _tht_rc=$?
+}
+
+builtin_check_targetdir() {
+  local rc=0 seen=0 want shared=1 nottree forkof home_cfg="" var pcfg="" pval="" i crate tree root
+  local ptree="" htree="" asked=0 hrc="" reach unread c d inplay=0 st
+  local h from ctree="" prc above applies pr forked=""
+  # Why the machine's reading can come back unmeasured (status 2).
+  local cloud="a cargo config at or above ${TMPDIR:-/tmp} may apply too"
+  local -a froms=()
+  local -A asked_from=()
+  local -a crates=() trees=() roots=() cfgs=() forks=() holes=()
+  [ $# -eq 0 ] ||
+    die "check targetdir takes no arguments (got: $*)
+       It reads the environment and the cargo config, whole-project."
+
+  # THE SHARED TREE IS THE CARGO ROOT'S (issue 0225): the project root's
+  # target, or the target of the workspace `project.cargo_root` names, from
+  # cargo_root, the one owner of that directory, where devbin runs its cargo lines.
+  want="$(cargo_root)" || die "check targetdir: the cargo root is refused (above)"
+  want="$want/target"
+  # THE SHARED TREE IS ONE CLEAN REMOVES (issue 0167): <root>/target with a
+  # Cargo.toml beside it (build_tree_rebuildable). With none, as for a crate
+  # nested below the project root, clean never removes it, and fullcycle fails
+  # a cycle that built there, so it is no tree to endorse; each crate's own
+  # workspace target is where cargo builds, and the one clean removes.
+  build_tree_rebuildable "$want" Cargo.toml || shared=0
+  nottree="not its own target or the shared tree at $want"
+  [ "$shared" = 1 ] || nottree="not its own target, and $want, with no Cargo.toml beside it, is no tree clean removes"
+
+  # 1. THE ENVIRONMENT. This is the measured private fork, and it is the
+  # one that reaches 41G without ever being written down anywhere.
+  #
+  # An EMPTY value is set, and cargo refuses it, so it is refused here in
+  # cargo_target_dir_why's words, as fullcycle refuses it: one value, one
+  # verdict (issue 0148). CARGO_BUILD_TARGET_DIR moves the tree as
+  # CARGO_TARGET_DIR does, and is read the same way (issue 0150), unless
+  # CARGO_TARGET_DIR is set too: cargo puts that first, so the other forks
+  # nothing, and is said to be shadowed, as fullcycle judges only the one in
+  # force.
+  for var in CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR; do
+    [ -n "${!var+x}" ] || continue
+    seen=1
+    if [ "$var" != "$(cargo_env_carrier)" ]; then
+      printf '    env      CARGO_BUILD_TARGET_DIR is set, and CARGO_TARGET_DIR, which cargo puts first, decides the tree\n'
+    elif [ -z "${!var}" ]; then
+      if [ "$shared" = 1 ]; then
+        warn "$var='' $(cargo_target_dir_why "") -- unset it, or set it to the shared tree at $want."
+      else
+        warn "$var='' $(cargo_target_dir_why "") -- unset it."
+      fi
+      rc=1
+    elif [ "${!var%/}" = "$want" ] && [ "$shared" = 1 ]; then
+      printf '    env      %s is set and points at the shared tree\n' "$var"
+    elif [ "${!var%/}" = "$want" ]; then
+      warn "$var=${!var} -- no Cargo.toml sits beside it at the project root, so clean never removes it and fullcycle fails a cycle built there: unset it, so each crate builds into its own workspace's target, which clean removes."
+      rc=1
+    else
+      forkof="not the shared tree at $want"
+      [ "$shared" = 1 ] || forkof="and with no Cargo.toml at the project root there is no shared tree to set it to: unset it, so each crate builds into its own workspace's target"
+      warn "$var=${!var} -- a per-session fork of the build cache, $forkof.
+       Each fork is a full copy: one project measured 52G across three of them.
+       If you set this because a build looked hung, it was almost certainly WAITING on cargo's build lock, which is silent and looks identical to a hang."
+      rc=1
+    fi
+  done
+
+  # 2. THE CARGO CONFIG. CARGO'S ANSWER IS THE VERDICT (issue 0150):
+  # each crate whose directory, an ancestor or CARGO_HOME holds a
+  # config naming target-dir or include is asked where it builds
+  # (cargo_build_dirs), from its own directory, as `cd crate && cargo build`
+  # runs, with both variables removed from cargo's environment, so a config's
+  # verdict does not hang on the environment of whoever runs the check: a
+  # committer's own CARGO_TARGET_DIR hid a project-wide fork (issue 0150). A
+  # tree that is the workspace's own target, or the shared one, is
+  # no fork. Each fork's cause is named, never decided, here, by the one
+  # attribution fullcycle's refusal makes too (cargo_tree_cause): one the
+  # project's config names (cargo_project_tree) fails, naming it; one the
+  # machine's config alone accounts for, asked of cargo in an empty directory
+  # (cargo_home_build_dir), is reported, not failed, since it is not this
+  # project's to fix; and one neither accounts for, from a config nearer the
+  # crate, fails with its cause unknown to this check rather than guessed.
+  # Trees are compared as they are placed (cargo_place), since cargo does not
+  # tidy a `..`. The machine's config is the file cargo reads in CARGO_HOME
+  # (cargo_config_file).
+  cargo_project_tree pcfg pval ptree
+  home_cfg="$(cargo_config_file "$(cargo_home_dir)")"
+  [ -n "$home_cfg" ] || home_cfg="$(cargo_home_dir)/config.toml (none there)"
+  st=0
+  cargo_build_dirs crates trees roots cfgs holes || st=$?
+  case "$st" in
+    0) asked=1 ;;
+    2) seen=1 ;;
+    *)
+      warn "check targetdir: where every crate builds could not be known (the error above says why), so a fork may be unseen"
+      seen=1
+      rc=1
+      ;;
+  esac
+  for i in ${trees[@]+"${!trees[@]}"}; do
+    crate="${crates[i]#"$PROJECT_ROOT"}"
+    crate="${crate#/}"
+    crate="${crate:-.}"
+    cargo_place "${trees[i]}" tree || tree="${trees[i]}"
+    cargo_place "${roots[i]}/target" root || root="${roots[i]}/target"
+    seen=1
+    forks[i]=0
+    if [ "$tree" = "$root" ]; then
+      printf '    cargo    %s builds into its own target\n' "$crate"
+    elif [ "$shared" = 1 ] && cargo_tree_same "$tree" "$want"; then
+      printf '    cargo    %s builds into the shared tree\n' "$crate"
+    else
+      forks[i]=1
+      _targetdir_home_tree htree hrc
+      case "$(cargo_tree_cause "$tree" "$ptree" "$htree")" in
+        project)
+          reach=""
+          [ "$shared" = 1 ] || ! cargo_tree_same "$tree" "$want" || reach=" With no Cargo.toml beside it, $want is no tree clean removes."
+          warn "${pcfg#"$PROJECT_ROOT"/} sets build.target-dir = $pval, and cargo builds $crate into $tree -- this forks the cache for every session in this project, not just yours.$reach"
+          rc=1
+          ;;
+        machine)
+          # The machine's fork is reported, not failed, and a hole does not
+          # make it one: it is accounted for.
+          forks[i]=0
+          printf '    machine  %s moves the build tree, and cargo builds %s into %s\n' "$home_cfg" "$crate" "$tree"
+          printf '             this forks EVERY rust project on this machine. Not this project to fix, and not failed here.\n'
+          ;;
+        *)
+          unread=""
+          [ "$hrc" -ne 2 ] || unread=" Where the machine's config sends a build could not be measured: $cloud."
+          warn "cargo builds $crate into $tree, $nottree, and no config this check can read accounts for it -- its cause is not named here.$unread"
+          rc=1
+          ;;
+      esac
+    fi
+  done
+
+  # A WALK WITH A HOLE IN IT (status 2; issue 0150). It
+  # fails only when a carrier is IN PLAY, and is otherwise reported, not
+  # failed, since failing on it would be a refusal this check never made
+  # before 0150. A config naming target-dir or include is in play when a crate
+  # beneath it that cargo answered for forks -- builds neither into its own
+  # workspace's target nor the shared tree, other than a fork the machine's
+  # config alone accounts for, which stays reported -- or when a hole lies at
+  # or beneath its directory and a crate beneath that hole would build
+  # elsewhere: cargo is asked from the hole's parent for a throwaway crate
+  # (cargo_probe_build_dir), reading every config that applies there, nearest
+  # first, and only the probe's own target, the shared tree or the machine's
+  # tree is harmless (issue 0163). That asked only the crates answered, so a
+  # config forking a second workspace beneath the hole passed, every crate
+  # cargo saw building into its own target. A hole no config applies at tells
+  # nothing, since a config moves only crates beneath its directory. One the
+  # walk can search but not list is asked from inside it, where cargo reads a
+  # config the walk could not see; one deeper in it is unseen, since nothing
+  # there can be listed, as one in a hole find cannot read at all is. One whose
+  # place the walk could not read back is asked of every config from its own
+  # directory, and of one above the project from the project root, where the
+  # project's own config is read first, as a crate here reads it. A probe that
+  # cannot answer, or a machine tree that cannot be measured, puts the walk in
+  # play, and the failure says why.
+  #
+  # A WORKSPACE WHOSE OWN CONFIG PINS target-dir = "target" FAILS OVER A HOLE
+  # BENEATH IT (issue 0163; kept failing): a crate beneath
+  # the hole builds into that workspace's target whether it is a member or a
+  # second workspace forked into it, and only what the hole hides tells which.
+  # A verdict that cannot see stays closed, so the failure names the remedy:
+  # make the directory readable to the user running the check, or move it out
+  # of the workspace.
+  #
+  # THE MACHINE'S CONFIG IS NEVER IN PLAY (issue 0164). It sends a crate
+  # beneath the hole where it sends every crate on this machine, which
+  # cargo_home_build_dir measures without the walk, and a fork it makes is
+  # reported, not failed, wherever it is seen. It was in play here, and here
+  # only: over a hole with no crate answered it failed, even as an `include`
+  # that moved nothing, while the same fork, once a crate was answered, was
+  # reported at rc 0. It is reported below.
+  if [ "$st" -eq 2 ]; then
+    # Above the project only: the root's own config is one of cfgs. A root
+    # that cannot be placed counts one, failing open.
+    above=0
+    if ! physical_dir "$PROJECT_ROOT" pr || ! _path_parent pr || cargo_config_above "$pr" --not-home; then
+      above=1
+    fi
+    for c in ${cfgs[@]+"${cfgs[@]}"} ABOVE; do
+      case "$c" in
+        ABOVE) [ "$above" = 1 ] || continue; d=/ ;;
+        *) d="${c%/.cargo/*}" ;;
+      esac
+      for i in ${crates[@]+"${!crates[@]}"}; do
+        # "${d%/}/"*, never "${d%/}"/*: with d=/, bash 5.3 matches nothing
+        # against a quoted expansion trimmed to empty before an unquoted glob.
+        case "${crates[i]}/" in
+          "${d%/}/"*) [ "${forks[i]:-0}" = 0 ] || inplay=1 ;;
+        esac
+      done
+    done
+    # Where a crate beneath each hole would build, asked from the hole's parent,
+    # where cargo reads every config that applies there, nearest first, as it
+    # would for a crate beneath it; only where a config other than the
+    # machine's applies there at all. A hole whose place was not read back is
+    # asked of every config, from its own directory.
+    froms=()
+    for h in ${holes[@]+"${holes[@]}"}; do
+      if [ -z "$h" ]; then
+        for c in ${cfgs[@]+"${cfgs[@]}"}; do froms+=("${c%/.cargo/*}"); done
+        [ "$above" = 0 ] || froms+=("$PROJECT_ROOT")
+        continue
+      fi
+      # Searchable, it is asked from inside, where a config in it applies.
+      if [ -x "$h" ] && cargo_config_above "$h" --not-home; then
+        froms+=("$h")
+        continue
+      fi
+      applies="$above"
+      for c in ${cfgs[@]+"${cfgs[@]}"}; do
+        d="${c%/.cargo/*}"
+        case "$h/" in "${d%/}/"*) applies=1; break ;; esac
+      done
+      [ "$applies" = 0 ] || froms+=("${h%/*}")
+    done
+    unread=""
+    for from in ${froms[@]+"${froms[@]}"}; do
+      [ -z "${asked_from[$from]:-}" ] || continue
+      asked_from[$from]=1
+      prc=0
+      cargo_probe_build_dir ctree "$from" || prc=$?
+      if [ "$prc" -ne 0 ]; then
+        warn "check targetdir: where a crate beneath $from would build could not be measured (the error above says why)"
+        inplay=1
+        continue
+      fi
+      [ -n "$ctree" ] || continue
+      ! { [ "$shared" = 1 ] && cargo_tree_same "$ctree" "$want"; } || continue
+      _targetdir_home_tree htree hrc
+      ! { [ -n "$htree" ] && cargo_tree_same "$ctree" "$htree"; } || continue
+      inplay=1
+      [ -n "$forked" ] || forked="a crate beneath $from would build into $ctree"
+      [ "$hrc" -ne 2 ] || unread=" Where the machine's config sends a build could not be measured, so $ctree could not be told from it: $cloud."
+    done
+    if [ "$inplay" = 1 ]; then
+      # The remedy only where what the hole hides decides it: a probe that
+      # answered a tree here. A config cargo cannot
+      # read, or a crate the walk answered forking, is cleared elsewhere.
+      reach="check targetdir: a cargo config here names target-dir or include, and the walk for crates could not read everything (the error above names it), so a crate beneath it may build elsewhere unasked"
+      [ -z "$forked" ] || reach="$reach -- $forked, and only what the directory hides tells whether that forks: make the directory readable to the user running this check, or move it out of the workspace.$unread"
+      warn "$reach"
+      rc=1
+    else
+      printf '    walk     could not read the whole project for its crates (the error above names it); no cargo config naming target-dir or include is in play here -- not failed\n'
+    fi
+  fi
+
+  # 3. A CONFIG NO CRATE BUILDS WITH IS REPORTED, NOT FAILED (issue
+  # 0150): with no crate to ask, cargo has no answer to give, and nothing is
+  # built into the tree it names, so it forks nothing. Said only when cargo was
+  # asked and named no crate.
+  if [ "$asked" = 1 ] && [ "${#trees[@]}" -eq 0 ] && [ -n "$pval" ]; then
+    seen=1
+    printf '    config   %s sets build.target-dir = %s, and no crate here builds with it -- not failed\n' "${pcfg#"$PROJECT_ROOT"/}" "$pval"
+  fi
+  # THE MACHINE'S CONFIG IS REPORTED AS CARGO READS IT (issue 0164), over a
+  # hole too, since it is never in play there, as of the crates the walk
+  # reached. It was reported only where sed read a value, so a dotted key, a
+  # trailing comment or an include that names target-dir was not reported at
+  # all, and the line below said there was no override in it. Cargo's reading
+  # needs no crate here: the probe is its own (cargo_home_build_dir).
+  if [ "${#trees[@]}" -eq 0 ] && { [ "$asked" = 1 ] || [ "$st" -eq 2 ]; } && cargo_config_in_home; then
+    seen=1
+    _targetdir_home_tree htree hrc
+    reach="no crate here builds with it"
+    [ "$asked" = 1 ] || reach="no crate the walk reached builds with it"
+    if [ "$hrc" -eq 0 ] && [ -n "$htree" ]; then
+      printf '    machine  %s moves the build tree to %s, and %s\n' "$home_cfg" "$htree" "$reach"
+      printf '             this forks EVERY rust project on this machine. Not this project to fix, and not failed here.\n'
+    elif [ "$hrc" -eq 0 ]; then
+      printf '    machine  %s names target-dir or include, and moves no build tree -- not failed\n' "$home_cfg"
+    elif [ "$hrc" -eq 2 ]; then
+      printf '    machine  %s names target-dir or include, and where it alone sends a build could not be measured: %s -- not failed\n' "$home_cfg" "$cloud"
+    else
+      printf '    machine  %s names target-dir or include, and where it sends a build could not be measured (the error above says why) -- not failed\n' "$home_cfg"
+    fi
+  fi
+
+  # THE CORPUS IS STATED ON THE PASSING PATH TOO. "No fork seen" and "I did not
+  # look" are the same silence otherwise, which is the shape this whole packet
+  # is about.
+  # It names the project's config file cargo reads, .cargo/config.toml when
+  # there is none: it named that one whatever it read (issue 0176).
+  if [ "$seen" = 0 ]; then
+    pcfg="$(cargo_config_file "$PROJECT_ROOT/.cargo")"
+    pcfg="${pcfg#"$PROJECT_ROOT"/}"
+    if [ "$shared" = 1 ]; then
+      printf '    no target-dir override in the environment, %s or %s -- cargo builds into the shared tree\n' \
+        "${pcfg:-.cargo/config.toml}" "$home_cfg"
+    else
+      printf '    no target-dir override in the environment, %s or %s -- cargo builds each crate into its own workspace target\n' \
+        "${pcfg:-.cargo/config.toml}" "$home_cfg"
+    fi
+  fi
+  return "$rc"
+}
+
+run_builtin_gate check "$@"

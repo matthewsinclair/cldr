@@ -1,0 +1,89 @@
+#!/usr/bin/env zsh
+# devbin: summary = everything after a cut: build, sign, notarise and attach the macOS asset, then publish the formula
+# devbin: group = Ship
+#
+# bin/devbin post-cut: the release core's one after: line (bin/.devbin/config.yaml),
+# so `bin/devbin release vX.Y.Z` runs from the cut to the tap under its one yes.
+#
+#   bin/devbin post-cut [<tag>]   <tag> defaults to the cut's (DEVBIN_RELEASE_CONFIRMED), else v<Cargo.toml's version>
+#
+# In order, stopping at the first failure: a detached worktree at the tag, a
+# release build there, bin/devbin macos prepare (sign, notarise, pack into
+# dist/release), bin/devbin release attach <tag> --from dist/release, then
+# bin/devbin formula publish, then this machine's clone of the tap pulled.
+#
+# ONE LINE, NOT FOUR: the core runs every after: line even when one before it
+# failed, and a formula pushed before the asset is attached gives every new
+# install a 404.
+#
+# A RE-RUN SKIPS WHAT IS DONE. A release already carrying the asset skips the
+# build, sign and attach (a new pack is new bytes, which attach refuses), and
+# formula publish leaves a tap that already carries the release as it is.
+#
+# THE WORKTREE, never the primary: a node's board commit can move the
+# primary's HEAD off the tag during a cut. It goes under the system's temp dir
+# (Launch Services registers bundles under ~/Devel) and is removed on every
+# way out, never with --force.
+
+emulate -L zsh
+setopt err_exit no_unset pipe_fail
+
+root=${0:A:h:h:h:h}
+cd $root
+
+die() { print -u2 "post-cut: $*"; exit 1 }
+say() { print -r -- "post-cut: $*" }
+
+case ${1:-} in
+  -h|--help) sed -n '/^#   bin\/devbin post-cut/,/^#$/p' ${0:A} | sed -e '$d' -e 's/^# \{0,1\}//'; exit 0 ;;
+esac
+(( $# <= 1 )) || die "usage: bin/devbin post-cut [<tag>]"
+[[ $(uname) == Darwin ]] || die "the asset is signed and notarised on macOS only; this is $(uname)"
+
+repo=$(sed -n 's/^  repo: //p' bin/.devbin/config.yaml | head -1)
+[[ -n $repo ]] || die "bin/.devbin/config.yaml names no release.repo"
+version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+tag=${1:-${DEVBIN_RELEASE_CONFIRMED:-v$version}}
+[[ $(git cat-file -t "refs/tags/$tag" 2>/dev/null) == tag ]] || die "'$tag' is not an annotated tag here, so it is not a release"
+commit=$(git rev-parse --verify "$tag^{commit}")
+# formula publish renders the newest release, whatever it is asked, so an
+# older tag here would sign one release and publish another's formula
+newest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+[[ $tag == $newest ]] || die "'$tag' is not the newest release ($newest), and formula publish publishes the newest"
+asset=cldr-${tag#v}-$(rustc -vV | sed -n 's/^host: //p').tar.gz
+
+assets=$(gh release view $tag -R $repo --json assets --jq '.assets[].name') ||
+  die "GitHub has no release object for $tag, or it cannot be read; nothing was done"
+
+say "cldr $tag at ${commit[1,12]}"
+if (( ${${(f)assets}[(Ie)$asset]} )); then
+  say "the release already carries $asset, so build, sign and attach are skipped"
+else
+  wt=$(getconf DARWIN_USER_TEMP_DIR)cldr-post-cut-$tag
+  [[ ! -e $wt ]] || die "$wt is left from an earlier run; read it, remove it with git worktree remove, and run this again"
+  git worktree add -q --detach $wt $tag || die "cannot make a worktree at $tag in $wt"
+  trap "git -C ${(q)root} worktree remove ${(q)wt} || print -u2 'post-cut: LEFT: '${(q)wt}" EXIT
+  for step in "cargo build --release --locked" "bin/devbin macos prepare" "bin/devbin release attach $tag --from dist/release"; do
+    say "$step"
+    ( cd $wt && ${=step} ) ||
+      die "$step failed at $tag; nothing after it ran. Fix the cause and run bin/devbin post-cut $tag"
+  done
+  # The worktree's build output is not the tree's, so it goes before the remove
+  rm -rf $wt/target $wt/dist
+fi
+
+say "bin/devbin formula publish"
+bin/devbin formula publish ||
+  die "formula publish failed; $asset is attached. Fix the cause and run bin/devbin post-cut $tag"
+
+# This machine's clone of the tap, pulled so brew upgrade sees the release:
+# brew's auto-update can leave a third-party tap behind. The upgrade is hv's.
+if (( $+commands[brew] )); then
+  tapdir=$(brew --repository)/Library/Taps/matthewsinclair/homebrew-cldr
+  if [[ -d $tapdir/.git ]]; then
+    git -C $tapdir pull -q --ff-only ||
+      die "cannot pull $tapdir; $asset is attached and the tap published. Pull it by hand before brew upgrade"
+    say "this machine's tap: $(git -C $tapdir log -1 --format=%s)"
+  fi
+fi
+say "cldr $tag: $asset attached and the tap published"
