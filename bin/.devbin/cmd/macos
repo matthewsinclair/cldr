@@ -119,10 +119,14 @@ cmd_verify() {
   done
 }
 
-# A notary credential from the login keychain, under the signing file's prefix
+# A notary credential from the login keychain, under the signing file's prefix;
+# an item that is missing, or there and empty, refuses by name
 secret() {
-  local keychain=$(fact keychain)
-  security find-generic-password -a $USER -s "$keychain.$1" -w 2>/dev/null || die "no $keychain.$1 in the login keychain"
+  local keychain=$(fact keychain) value
+  value=$(security find-generic-password -a "$USER" -s "$keychain.$1" -w 2>/dev/null) ||
+    die "no $keychain.$1 in the login keychain"
+  [[ -n $value ]] || die "$keychain.$1 in the login keychain is empty"
+  print -r -- $value
 }
 
 # The three notary credentials, each read by plain assignment, so a missing one

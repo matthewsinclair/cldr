@@ -10,7 +10,8 @@
 # In order, stopping at the first failure: a detached worktree at the tag, a
 # release build there, bin/devbin macos prepare (sign, notarise, pack into
 # dist/release), bin/devbin release attach <tag> --from dist/release, then
-# bin/devbin formula publish, then this machine's clone of the tap pulled.
+# bin/devbin formula publish, then this machine's clone of the tap pulled, or a
+# line saying why it was not: no brew, or no clone of the tap where brew keeps it.
 #
 # ONE LINE, NOT FOUR: the core runs every after: line even when one before it
 # failed, and a formula pushed before the asset is attached gives every new
@@ -58,6 +59,7 @@ assets=$(gh release view $tag -R $repo --json assets --jq '.assets[].name') ||
 say "cldr $tag at ${commit[1,12]}"
 if (( ${${(f)assets}[(Ie)$asset]} )); then
   say "the release already carries $asset, so build, sign and attach are skipped"
+  attached="already attached"
 else
   wt=$(getconf DARWIN_USER_TEMP_DIR)cldr-post-cut-$tag
   [[ ! -e $wt ]] || die "$wt is left from an earlier run; read it, remove it with git worktree remove, and run this again"
@@ -70,6 +72,7 @@ else
   done
   # The worktree's build output is not the tree's, so it goes before the remove
   rm -rf $wt/target $wt/dist
+  attached="attached"
 fi
 
 say "bin/devbin formula publish"
@@ -78,12 +81,21 @@ bin/devbin formula publish ||
 
 # This machine's clone of the tap, pulled so brew upgrade sees the release:
 # brew's auto-update can leave a third-party tap behind. The upgrade is hv's.
-if (( $+commands[brew] )); then
-  tapdir=$(brew --repository)/Library/Taps/matthewsinclair/homebrew-cldr
-  if [[ -d $tapdir/.git ]]; then
+# Each way it is not pulled says what it looked for, and the last line claims
+# only what ran.
+pulled="this machine's tap not pulled"
+if (( ! $+commands[brew] )); then
+  say "no brew on PATH, so this machine's tap was not pulled"
+else
+  brew_repo=$(brew --repository) || die "brew cannot name its repository; $asset is $attached and the tap published"
+  tapdir=$brew_repo/Library/Taps/matthewsinclair/homebrew-cldr
+  if [[ ! -d $tapdir/.git ]]; then
+    say "no clone of the tap at $tapdir, so this machine's tap was not pulled"
+  else
     git -C $tapdir pull -q --ff-only ||
-      die "cannot pull $tapdir; $asset is attached and the tap published. Pull it by hand before brew upgrade"
+      die "cannot pull $tapdir; $asset is $attached and the tap published. Pull it by hand before brew upgrade"
     say "this machine's tap: $(git -C $tapdir log -1 --format=%s)"
+    pulled="this machine's tap pulled"
   fi
 fi
-say "cldr $tag: $asset attached and the tap published"
+say "cldr $tag: $asset $attached, the formula published, $pulled"
