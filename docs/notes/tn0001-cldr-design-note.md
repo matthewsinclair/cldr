@@ -111,7 +111,7 @@ TOML at `$XDG_CONFIG_HOME/cldr/config.toml` (default `~/.config/cldr/config.toml
 
 ## Repository
 
-Edition 2024 with `unsafe_code` forbidden and clippy's `unwrap_used` and `expect_used` denied; `rustfmt.toml` with two-space tabs; `src/` by concern (see `AGENTS.md`); CI on macOS and Linux; a Homebrew formula built from the tag's source; release tooling in shell. MIT licence.
+Edition 2024 with `unsafe_code` forbidden and clippy's `unwrap_used` and `expect_used` denied; `rustfmt.toml` with two-space tabs; `src/` by concern (see `intent/llm/ARCHITECTURE.md`); CI on macOS and Linux; a Homebrew formula that installs the signed and notarised release asset; release tooling in shell. MIT licence.
 
 ## Privacy
 

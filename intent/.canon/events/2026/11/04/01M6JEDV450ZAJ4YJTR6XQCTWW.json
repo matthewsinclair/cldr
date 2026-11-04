@@ -1,0 +1,15 @@
+{
+  "id": "01M6JEDV450ZAJ4YJTR6XQCTWW",
+  "ts": "2026-11-04T04:52:39.685Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "wb.register",
+  "subject": {
+    "type": "node",
+    "id": "dc"
+  },
+  "payload": {
+    "name": "dc",
+    "role": "dc"
+  }
+}

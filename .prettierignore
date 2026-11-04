@@ -1,0 +1,12 @@
+
+# Generated views have ONE writer, and it is the renderer. A formatter
+# editing these rewrites markup the author wrote, and `intent doctor` then
+# reports the drift as a hand-edit on a file nobody touched.
+intent/st/steel_threads.md
+intent/todo.md
+intent/st/*/info.md
+intent/st/*/acceptance.md
+intent/st/*/WP/*/info.md
+intent/issues/*.md
+intent/whiteboard/*/wip.md
+intent/whiteboard/*/inbox.*.md

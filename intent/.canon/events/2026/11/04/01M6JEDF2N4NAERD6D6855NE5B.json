@@ -1,0 +1,14 @@
+{
+  "id": "01M6JEDF2N4NAERD6D6855NE5B",
+  "ts": "2026-11-04T04:52:27.349Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "Cldr",
+  "op": "init",
+  "subject": {
+    "type": "project",
+    "id": "Cldr"
+  },
+  "payload": {
+    "intent_version": "3.2.8"
+  }
+}

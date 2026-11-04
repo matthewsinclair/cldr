@@ -1,0 +1,15 @@
+{
+  "intent_version": "3.2.8",
+  "project_name": "Cldr",
+  "author": "matts",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "created": "2026-11-04T04:52:27.349Z",
+  "intent_dir": "intent",
+  "languages": [
+    "rust",
+    "shell"
+  ],
+  "backup": {
+    "schedule": "daily"
+  }
+}

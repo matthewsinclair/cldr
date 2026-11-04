@@ -2,3 +2,9 @@
 .DS_Store
 /dist/
 /tmp/
+
+# The Intent runtime store: per-machine, rebuilt from the committed extract.
+intent/.cache/
+
+# Intent's store snapshots and text exports: per-machine, never committed.
+intent/.backup/

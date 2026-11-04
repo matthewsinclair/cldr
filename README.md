@@ -72,7 +72,7 @@ cldr doctor                    # config, journal, zones, calendar access
 
 ## Developing
 
-`AGENTS.md` maps the source and lists the invariants. `cargo test`, `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` must pass; CI runs them on macOS and Linux. To release, from a clean `main` that matches GitHub, with the tap checked out at `../Brew/homebrew-cldr`: `tools/release --dry-run X.Y.Z`, then `tools/release X.Y.Z`.
+`intent/llm/ARCHITECTURE.md` maps the source and lists the invariants, and `intent/llm/RULES.md` holds the rules for changes and the release steps. `cargo test`, `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` must pass; CI runs them on macOS and Linux. To release, on the maintainer's Mac, run the one command, `bin/devbin release vX.Y.Z` (`--dry-run` first).
 
 ## Licence
 
