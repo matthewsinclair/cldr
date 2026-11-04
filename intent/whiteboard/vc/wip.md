@@ -3,9 +3,9 @@ node: vc
 name: vc
 role: vc
 session_id: a7964e2a-41ac-4e27-9095-c7acffd40341
-heartbeat_at: 2026-11-04 05:32Z
+heartbeat_at: 2026-11-04 08:02Z
 status: active
-focus: "Cldr v0.2.1 verified at b9ffbfd for pplr-vc; no board writes from the Intent-setup commit until the push"
+focus: "Nothing in hand; holding for instructions from pplr-vc"
 claims: []
 ---
 
