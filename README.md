@@ -21,7 +21,7 @@ $EDITOR ~/.config/cldr/config.toml
 cldr doctor
 ```
 
-The config holds everything personal: where the journal is, the zones you were in, how tags are spelt, what is not work, what bills, the month templates and links, and the briefing's blocks. See [examples/config.toml](examples/config.toml). `CLDR_CONFIG` or `--config PATH` points elsewhere.
+The config holds everything personal: where the journal is, the zones you were in, how tags are spelt, what is not work, what bills, the month templates and links, and the briefing's blocks. [examples/config.toml](examples/config.toml) shows every key. `CLDR_CONFIG` or `--config PATH` points elsewhere.
 
 The calendar comes from BusyCal's local store, which holds every account BusyCal syncs, and is only ever read. On macOS the terminal needs Full Disk Access to read it; `cldr doctor` says so when it is missing.
 
@@ -52,7 +52,7 @@ A day in the Day Notes:
 |         |             |   5.5 |      |              |
 ```
 
-Days and weeks run newest first; a week heading is `#### YYYYMMDD (Week NN)`. The `Bill` column is optional. Cldr writes only between its own `<!-- cldr:… -->` markers and leaves every other byte as you wrote it.
+Days and weeks run newest first; a week heading is `#### YYYYMMDD (Week NN)`. The `Bill` column is optional. Cldr writes only between its own `<!-- cldr:... -->` markers and leaves every other byte as you wrote it.
 
 ## Commands
 
@@ -63,16 +63,16 @@ cldr render year 2026          # 2026-hours-ytd.md
 cldr briefing                  # the Daily Briefing (from the cutover hour, tomorrow's)
 cldr check month               # totals and every flag; writes nothing
 cldr data month                # the structured data as JSON
-cldr month new                 # start the month: templates, links, archive the last one
+cldr month new                 # start the month: templates, links, archive earlier months
 cldr export week --stdout      # what the calendar reader sees, as CSV
 cldr doctor                    # config, journal, zones, calendar access
 ```
 
-`cldr help` lists every option. Writes go through a temporary file, and `--dry-run` shows a write before it happens.
+`cldr help` is the full list of commands and options. `--dry-run` shows what `render`, `briefing` or `month new` would write, and `render` and `briefing` write through a temporary file.
 
 ## Developing
 
-`intent/llm/ARCHITECTURE.md` maps the source and lists the invariants, and `intent/llm/RULES.md` holds the rules for changes and the release steps. `cargo test`, `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` must pass; CI runs them on macOS and Linux. To release, on the maintainer's Mac, run the one command, `bin/devbin release vX.Y.Z` (`--dry-run` first).
+[intent/llm/ARCHITECTURE.md](intent/llm/ARCHITECTURE.md) maps the source and its invariants; [intent/llm/RULES.md](intent/llm/RULES.md) holds the rules for changes, the checks to run and the release.
 
 ## Licence
 

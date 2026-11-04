@@ -29,7 +29,7 @@ The cross-language principles, Highlander, PFIC, Thin Coordinator and No Silent 
 <!-- user:start -->
 <!-- Author: matts. Add project-specific Claude directives below this line. Preserved across regeneration. -->
 
-Cldr's own rules for changes, and how to work on and release it, are in `intent/llm/RULES.md`; its module map and invariants are in `intent/llm/ARCHITECTURE.md`. Both load into every session:
+Cldr's own rules and architecture, loaded into every session:
 
 @intent/llm/RULES.md
 @intent/llm/ARCHITECTURE.md

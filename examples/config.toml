@@ -16,8 +16,11 @@ zone = "Pacific/Auckland"
 from = "2026-12-20"
 zone = "Europe/London"
 
+# include and exclude match substrings of "calendar (account)"; an empty include reads every
+# calendar. me: your own addresses, to read your reply to an invitation.
 [calendar]
 source = "busycal"
+# store = "~/path/to/the/store"   # the store's standard location when absent
 include = ["you@example.com", "you@work.example"]
 exclude = ["Holidays"]
 me = ["you@example.com", "you@work.example"]
@@ -31,6 +34,8 @@ me = ["you@example.com", "you@work.example"]
 [bill]
 "@Acme" = 1.0
 
+# What counts as work and what is flagged: each key is a rule in the Rules section of
+# docs/notes/tn0001-cldr-design-note.md.
 [rules]
 exclude = ["[GYM]", "@personal"]
 zero_hours = ["Travel:"]

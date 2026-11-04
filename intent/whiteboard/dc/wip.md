@@ -3,9 +3,9 @@ node: dc
 name: dc
 role: dc
 session_id: e2ea78f0-17a5-4962-8958-4cd22b32d155
-heartbeat_at: 2026-11-04 07:59Z
+heartbeat_at: 2026-11-04 08:55Z
 status: active
-focus: "Folded: Cldr at v0.2.1, intent/wip.md written for where it stands; nothing in hand."
+focus: "Doc pass for hv: Cldr's docs in step with src at 01fba38 and leaned, in one commit; ready to compact."
 claims: []
 ---
 

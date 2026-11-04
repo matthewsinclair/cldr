@@ -5,9 +5,9 @@
     "name": "dc",
     "role": "dc",
     "session_id": "e2ea78f0-17a5-4962-8958-4cd22b32d155",
-    "heartbeat_at": "2026-11-04T07:59:56.291Z",
+    "heartbeat_at": "2026-11-04T08:55:56.517Z",
     "status": "active",
-    "focus": "Folded: Cldr at v0.2.1, intent/wip.md written for where it stands; nothing in hand.",
+    "focus": "Doc pass for hv: Cldr's docs in step with src at 01fba38 and leaned, in one commit; ready to compact.",
     "claims": [],
     "recorded_at": "2026-11-04T04:52:39.685Z",
     "migrated_at": "2026-11-04T04:52:39.685Z"

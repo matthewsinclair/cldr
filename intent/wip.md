@@ -1,5 +1,5 @@
 ---
-verblock: "2026-11-04T07:59:29Z:v0.2: matts - Cldr at v0.2.1, and what is open"
+verblock: "2026-11-04T08:51:51Z:v0.3: matts - Cldr at v0.2.1: what is open"
 ---
 
 # Work In Progress
@@ -8,7 +8,7 @@ DOING and TODO only; finished work lives in its commit, its closed issue or its 
 
 ## Current Focus
 
-**Cldr stands at v0.2.1.** Nothing is in progress, and no steel thread exists yet: the next piece of work starts one with `intent st new`. A release is the one command, `bin/devbin release vX.Y.Z`, as `intent/llm/RULES.md` describes.
+**Cldr stands at v0.2.1.** Nothing is in progress, and no steel thread exists yet: the next piece of work starts one with `intent st new`.
 
 ## Active Steel Threads
 
@@ -16,10 +16,9 @@ _(none)_
 
 ## Upcoming Work
 
-- The open work in TN0002 (`docs/notes/tn0002-cldr-build-plan.md`, under `## Open`). Its CLI tests meet devbin's `check autotests`: `tests/` already holds `tests/packaging.rs`, and a crate with more than one auto-discovered test target fails the check, so the CLI tests join that target or are declared with `[[test]]`.
-- `fact()`'s lost status in `bin/.devbin/cmd/macos`: a `local x=$(fact ...)` keeps no status, so a missing fact reads as empty. It waits for the notary-profile change.
-- Intent's shell critic has not yet run over `bin/.devbin/cmd/post-cut`, `macos` and `lock-sync`. Its first findings on them go to pplr-vc before those files change.
-
-## Notes
-
-- `AGENTS.md` is generated, and its `bats -r tests/` and POSIX shell lines do not fit Cldr, as `intent/llm/RULES.md` says. The template fix is Intent's.
+- The open work in TN0002 (`docs/notes/tn0002-cldr-build-plan.md`, under `## Open`).
+- Decide whether `cldr export` should write its CSV through a temporary file, as `render` and `briefing` do; it writes directly (`src/cli.rs`).
+- `fact()`'s lost status in `bin/.devbin/cmd/macos`: a `local x=$(fact ...)` keeps no status, so a missing fact reads as empty.
+- Intent's shell critic has not yet run over `bin/.devbin/cmd/post-cut`, `macos` and `lock-sync`.
+- The tap's CI excuses devbin's long manifest line, with `--except-cops Layout/LineLength` and `--skip-style` (homebrew-cldr `8f7df94` and `d938ad9`); both go once devbin's `finish_ruby` wraps the line it writes.
+- Nothing runs the daily store backup that `intent/.config/config.json` declares: run `intent backup` by hand when `intent doctor` says backup-stale.
