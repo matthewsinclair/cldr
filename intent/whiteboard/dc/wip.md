@@ -3,9 +3,9 @@ node: dc
 name: dc
 role: dc
 session_id: e2ea78f0-17a5-4962-8958-4cd22b32d155
-heartbeat_at: 2026-11-04 09:15Z
+heartbeat_at: 2026-11-04 12:21Z
 status: active
-focus: "Cldr v0.2.2 out at 56af07a, asset and tap at 0.2.2; dc folded and holds for pplr-vc and cldr-vc"
+focus: "Parked until hv picks it up: Cldr v0.2.2 out and folded; nothing in hand"
 claims: []
 ---
 
