@@ -63,7 +63,7 @@ else
   [[ ! -e $wt ]] || die "$wt is left from an earlier run; read it, remove it with git worktree remove, and run this again"
   git worktree add -q --detach $wt $tag || die "cannot make a worktree at $tag in $wt"
   trap "git -C ${(q)root} worktree remove ${(q)wt} || print -u2 'post-cut: LEFT: '${(q)wt}" EXIT
-  for step in "cargo build --release --locked" "bin/devbin macos prepare" "bin/devbin release attach $tag --from dist/release"; do
+  for step in "bin/devbin build" "bin/devbin macos prepare" "bin/devbin release attach $tag --from dist/release"; do
     say "$step"
     ( cd $wt && ${=step} ) ||
       die "$step failed at $tag; nothing after it ran. Fix the cause and run bin/devbin post-cut $tag"

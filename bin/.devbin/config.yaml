@@ -5,6 +5,8 @@
 
 project:
   name: cldr
+  # Cargo.toml is the one version source; Cargo.lock follows through bin/devbin lock-sync
+  version_from: Cargo.toml
   languages:
     - rust
 
@@ -12,6 +14,8 @@ project:
 devbin_version: "^0.1.19"
 
 commands:
+  build:
+    run: cargo build --release --locked
   release:
     enabled: true
   formula:
@@ -28,9 +32,12 @@ release:
     - local
     - upstream
   branch: main
+  derived:
+    - bin/devbin lock-sync
   gates:
     - check all
     - test all
+    - doctor
   ci:
     workflow: build.yml
   object: local

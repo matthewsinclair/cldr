@@ -2,7 +2,8 @@ name: Build
 
 on:
   push:
-    branches: [main]
+    # candidate/<tag> is the release core's candidate push, whose CI a cut reads before it tags
+    branches: [main, "candidate/**"]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:

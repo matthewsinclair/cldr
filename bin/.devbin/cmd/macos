@@ -25,7 +25,8 @@
 # IT RUNS ON THE MAINTAINER'S MAC ONLY. It refuses on CI ($CI set), off macOS,
 # and, for a real signature, when the Developer ID identity is not in the
 # keychain. The notary credentials are read from the login keychain, under
-# packaging/macos/signing's `keychain` prefix, only by a real notarize.
+# packaging/macos/signing's `keychain` prefix, only by a real notarize or
+# prepare, and prepare reads them before it signs anything.
 
 emulate -L zsh
 setopt err_exit no_unset pipe_fail
@@ -64,7 +65,7 @@ triple() { rustc -vV | sed -n 's/^host: //p' }
 cmd_stage() {
   local b
   for b in $binaries; do
-    [[ -e target/release/$b ]] || die "no release build of $b: run cargo build --release --locked"
+    [[ -e target/release/$b ]] || die "no release build of $b: run bin/devbin build"
   done
   mkdir -p $stage
   for b in $binaries; do /usr/bin/ditto target/release/$b $stage/$b; done
@@ -124,6 +125,17 @@ secret() {
   security find-generic-password -a $USER -s "$keychain.$1" -w 2>/dev/null || die "no $keychain.$1 in the login keychain"
 }
 
+# The three notary credentials, each read by plain assignment, so a missing one
+# stops the run by name. Inside notarytool's arguments, or under `local`, the
+# status of secret's die is lost, and notarytool runs with an empty value.
+apple_id='' apple_password='' apple_team=''
+credentials() {
+  [[ -z $apple_id ]] || return 0
+  apple_id=$(secret APPLE_ID) || exit 1
+  apple_password=$(secret APPLE_APP_PASSWORD) || exit 1
+  apple_team=$(secret APPLE_TEAM_ID) || exit 1
+}
+
 cmd_notarize() {
   local dry=$1
   require_staged
@@ -133,6 +145,7 @@ cmd_notarize() {
     print "  (the credentials are read from the login keychain, service prefix $keychain, at submission)"
     return
   fi
+  credentials
   require_identity
   local b
   for b in $binaries; do
@@ -145,7 +158,7 @@ cmd_notarize() {
   /usr/bin/ditto -c -k --keepParent --sequesterRsrc $payload $zip
   step "submitting to Apple (notarytool waits)"
   local out
-  out=$(xcrun notarytool submit $zip --apple-id "$(secret APPLE_ID)" --password "$(secret APPLE_APP_PASSWORD)" --team-id "$(secret APPLE_TEAM_ID)" --wait 2>&1) || true
+  out=$(xcrun notarytool submit $zip --apple-id "$apple_id" --password "$apple_password" --team-id "$apple_team" --wait 2>&1) || true
   print -r -- $out
   [[ $out == *"status: Accepted"* ]] || die "notarisation was not Accepted"
   rm -rf $payload $zip
@@ -189,6 +202,8 @@ case $sub in
   notarize) cmd_notarize $dry ;;
   pack) cmd_pack $adhoc ;;
   prepare)
+    # The notary credentials first, so a missing one refuses with nothing signed
+    if (( ! adhoc && ! dry )); then credentials; fi
     cmd_stage
     cmd_sign $adhoc
     # The signature alone: spctl waits for pack's verify, after notarize

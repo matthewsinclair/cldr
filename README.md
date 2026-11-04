@@ -10,7 +10,7 @@ The design is [TN0001](docs/notes/tn0001-cldr-design-note.md); how it was built 
 brew install matthewsinclair/cldr/cldr
 ```
 
-The formula builds from the release tag's source on macOS and Linux. Or from a checkout: `cargo build --release --locked`.
+The formula installs the signed and notarised cldr for macOS on Apple silicon. From a checkout: `bin/devbin build`, which runs `cargo build --release --locked`.
 
 ## Set up
 

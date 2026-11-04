@@ -1,0 +1,62 @@
+#!/usr/bin/env zsh
+# devbin: summary = bring Cargo.lock in step with Cargo.toml after a version stamp, as the release's derived: step
+# devbin: group = Ship
+#
+# `bin/devbin lock-sync` for cldr: bring Cargo.lock in step with Cargo.toml
+# after a version stamp, and print the path it wrote (pplr's, itself after
+# Gtools' tools/lock-sync).
+#
+# devbin's release core stamps the version into Cargo.toml (version_from) and
+# refuses a lockfile as a sidecar, so the release runs this as `derived:`,
+# whose contract is to print each path written, one per line.
+#
+# CARGO WRITES THE LOCK, NOT THIS SCRIPT: `cargo metadata` rewrites it as a
+# side effect of resolving. AND THE CHANGE IS BOUNDED: the lock before and
+# after must agree once the crate's own `version` line is set aside (the one
+# [[package]] with no `source` line; every dependency has one). Anything else
+# that moved puts the old lock back and refuses, so a resolver change never
+# rides into a release commit unnoticed.
+
+emulate -L zsh
+setopt err_exit no_unset pipe_fail
+
+root=${0:A:h:h:h:h}
+lock=Cargo.lock
+
+die() { print -u2 "lock-sync: $*"; exit 1 }
+
+(( $# == 0 )) || die "takes no arguments, and was given: $*"
+cd $root
+[[ -f $lock ]] || die "no $lock to sync"
+(( $+commands[cargo] )) || die "cargo is not on PATH; the lock is cargo's to write"
+
+# The lock with the crate's own version line taken out of its [[package]] block
+own_version_aside() {
+  awk '
+    function flush(   i) {
+      for (i = 1; i <= n; i++) if (!(package && sourceless && block[i] ~ /^version = "/)) print block[i]
+      n = 0; sourceless = 1; package = 0
+    }
+    BEGIN { n = 0; sourceless = 1; package = 0 }
+    /^$/ { flush(); print; next }
+    { block[++n] = $0; if (n == 1 && $0 == "[[package]]") package = 1; if ($0 ~ /^source = "/) sourceless = 0 }
+    END { flush() }
+  ' $1
+}
+
+before=$(<$lock)
+put_back() { print -r -- $before > $lock }
+
+# No --locked: rewriting the lock is the point. No --offline: the resolver may
+# want the index for a target this machine never builds.
+if ! err=$(cargo metadata --format-version 1 2>&1 >/dev/null); then
+  put_back
+  die "cargo could not resolve the crate, so $lock is unchanged: ${${(f)err}[1]}"
+fi
+
+if ! moved=$(diff <(print -r -- $before | own_version_aside /dev/stdin) <(own_version_aside $lock)); then
+  put_back
+  die "cargo changed more than cldr's own version, so $lock is put back:"$'\n'$moved
+fi
+
+print $lock
