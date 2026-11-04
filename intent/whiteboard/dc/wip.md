@@ -3,9 +3,9 @@ node: dc
 name: dc
 role: dc
 session_id: e2ea78f0-17a5-4962-8958-4cd22b32d155
-heartbeat_at: 2026-11-04 06:52Z
+heartbeat_at: 2026-11-04 07:59Z
 status: active
-focus: "Cldr 0.2.1: prep b9ffbfd and signer bd3bd35 on main, signer proof green (notarised, Accepted). This board goes in with the Intent-setup commit; no board writes after it until hv's push is done."
+focus: "Folded: Cldr at v0.2.1, intent/wip.md written for where it stands; nothing in hand."
 claims: []
 ---
 
