@@ -1,5 +1,5 @@
 ---
-verblock: "2026-11-04T09:02:34Z:v0.4: matts - Cldr at v0.2.1, 0.2.2 open: what is open"
+verblock: "2026-11-04T09:15:34Z:v0.5: matts - Cldr at v0.2.2: what is open"
 ---
 
 # Work In Progress
@@ -8,7 +8,7 @@ DOING and TODO only; finished work lives in its commit, its closed issue or its 
 
 ## Current Focus
 
-**Cldr stands at v0.2.1, with 0.2.2 open** in `CHANGELOG.md` for the patch cut that tests the one-command release end to end. No steel thread exists yet: the next piece of work starts one with `intent st new`.
+**Cldr stands at v0.2.2.** Nothing is in progress, and no steel thread exists yet: the next piece of work starts one with `intent st new`.
 
 ## Active Steel Threads
 

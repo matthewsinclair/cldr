@@ -3,9 +3,9 @@ node: dc
 name: dc
 role: dc
 session_id: e2ea78f0-17a5-4962-8958-4cd22b32d155
-heartbeat_at: 2026-11-04 09:02Z
+heartbeat_at: 2026-11-04 09:15Z
 status: active
-focus: "Cldr 0.2.2 notes for hv's patch cut, with cldr-vc's R1 and R2, in one commit; no board writes until v0.2.2 is pushed"
+focus: "Cldr v0.2.2 out at 56af07a, asset and tap at 0.2.2; dc folded and holds for pplr-vc and cldr-vc"
 claims: []
 ---
 
