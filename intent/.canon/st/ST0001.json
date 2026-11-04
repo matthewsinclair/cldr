@@ -6,7 +6,7 @@
   "status": "wip",
   "created": "2026-11-04",
   "objective": "`cldr export` writes its CSV through a temporary file and a rename, as `render` and `briefing` do, so an interrupted export never leaves half a CSV in place of a whole one; `--force` stays the only way to replace an existing CSV. Every write error names its file, as `intent/llm/RULES.md` requires: today `create_dir_all` and `std::fs::write` in `export_command` report a bare OS error.",
-  "context": "",
+  "context": "Landed as 22074cc; cldr-vc reviewed it (the code is right, gates rerun green in a fresh clone). Open before `st done`, from that review:\n\n- F1: acceptance.md has no ACs: add them for the atomic replace (no half CSV, no temporary file left), every write error naming its file or folder, and `--force` as the only way to replace a CSV; ATs cite the two `cli.rs` tests.\n- F3: `a_failed_write_names_the_file` should assert the error contains the full CSV path, not just its folder.\n- F4: the folder-naming error from `create_dir_all` in `export_command` has no test (eg the parent is a regular file).\n- F5: `write_atomically` leaves `<file>.cldr-tmp` behind when the write or rename fails (render and briefing too); remove it on the error path.\n\nF3 to F5 are code and need a cargo slot.",
   "body": "",
   "preamble": ""
 }

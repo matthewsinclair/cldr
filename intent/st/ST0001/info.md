@@ -14,7 +14,14 @@ completed:
 
 ## Context
 
-_(not yet written)_
+Landed as 22074cc; cldr-vc reviewed it (the code is right, gates rerun green in a fresh clone). Open before `st done`, from that review:
+
+- F1: acceptance.md has no ACs: add them for the atomic replace (no half CSV, no temporary file left), every write error naming its file or folder, and `--force` as the only way to replace a CSV; ATs cite the two `cli.rs` tests.
+- F3: `a_failed_write_names_the_file` should assert the error contains the full CSV path, not just its folder.
+- F4: the folder-naming error from `create_dir_all` in `export_command` has no test (eg the parent is a regular file).
+- F5: `write_atomically` leaves `<file>.cldr-tmp` behind when the write or rename fails (render and briefing too); remove it on the error path.
+
+F3 to F5 are code and need a cargo slot.
 
 ## Acceptance
 

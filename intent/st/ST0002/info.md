@@ -14,7 +14,7 @@ Tests under `tests/` that run the cldr binary over a generated journal, beside t
 
 ## Context
 
-_(not yet written)_
+Not started in code. hv's ruling (2026-11-04): share the synthetic BusyCal store builder. Move `calendar/busycal.rs`'s test `Store` into a `#[doc(hidden)] pub` module that can save to a file, so the unit tests and `tests/cli.rs` use one builder, and `briefing` and `export` are tested end to end against a synthetic store. `render`, `check` and `data` run with `--no-calendar` over a past month (2026-10), so today's date cannot change them. Cargo.toml: `autotests = false`, `[[test]]` for `packaging` and `cli`.
 
 ## Acceptance
 

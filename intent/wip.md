@@ -1,5 +1,5 @@
 ---
-verblock: "2026-11-04T09:15:34Z:v0.5: matts - Cldr at v0.2.2: what is open"
+verblock: "2026-11-04T19:53:49Z:v0.6: matts - ST0001 in review, ST0002 next"
 ---
 
 # Work In Progress
@@ -8,17 +8,18 @@ DOING and TODO only; finished work lives in its commit, its closed issue or its 
 
 ## Current Focus
 
-**Cldr stands at v0.2.2.** Nothing is in progress, and no steel thread exists yet: the next piece of work starts one with `intent st new`.
+**ST0001** `cldr export` writes through a temporary file: landed, reviewed by cldr-vc; its ACs and three small test and cleanup findings remain (the thread's Context lists them).
+
+**ST0002** CLI tests: next; hv ruled that the synthetic calendar store builder is shared with them (the thread's Context).
 
 ## Active Steel Threads
 
-_(none)_
+- ST0001: cldr export writes through a temporary file (dc).
+- ST0002: CLI tests: the binary run over a generated journal (dc).
 
 ## Upcoming Work
 
-- The open work in TN0002 (`docs/notes/tn0002-cldr-build-plan.md`, under `## Open`).
-- Decide whether `cldr export` should write its CSV through a temporary file, as `render` and `briefing` do; it writes directly (`src/cli.rs`).
-- `fact()`'s lost status in `bin/.devbin/cmd/macos`: a `local x=$(fact ...)` keeps no status, so a missing fact reads as empty. It waits for the notary-profile change, which comes after the patch cuts.
-- Intent's shell critic has not yet run over `bin/.devbin/cmd/post-cut`, `macos` and `lock-sync`.
+- The rest of TN0002's Open section (`docs/notes/tn0002-cldr-build-plan.md`): EventKit, `month new` checking first, retiring `legacy.rs`.
+- `bin/.devbin/cmd/post-cut`, `macos` and `lock-sync`: devbin builds their replacement (hv's ruling); cldr-dc's critic-shell findings went to devbin-vc. Edit none of them meanwhile.
 - The tap's CI excuses devbin's long manifest line, with `--except-cops Layout/LineLength` and `--skip-style` (homebrew-cldr `8f7df94` and `d938ad9`); both go once devbin's `finish_ruby` wraps the line it writes.
 - Nothing runs the daily store backup that `intent/.config/config.json` declares: run `intent backup` by hand when `intent doctor` says backup-stale.

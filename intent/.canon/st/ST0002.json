@@ -6,7 +6,7 @@
   "status": "wip",
   "created": "2026-11-04",
   "objective": "Tests under `tests/` that run the cldr binary over a generated journal, beside the unit tests, as TN0002's Open section asks: `render` run twice changes nothing and leaves the text outside the markers intact, `briefing`, `month new` on a scratch tree, and `export`'s refusal without `--force`. All data is synthetic (`@acme`, `example.com`). devbin's `check autotests` fails a second auto-discovered target, so the crate sets `autotests = false` and declares `packaging` and `cli` by name.",
-  "context": "",
+  "context": "Not started in code. hv's ruling (2026-11-04): share the synthetic BusyCal store builder. Move `calendar/busycal.rs`'s test `Store` into a `#[doc(hidden)] pub` module that can save to a file, so the unit tests and `tests/cli.rs` use one builder, and `briefing` and `export` are tested end to end against a synthetic store. `render`, `check` and `data` run with `--no-calendar` over a past month (2026-10), so today's date cannot change them. Cargo.toml: `autotests = false`, `[[test]]` for `packaging` and `cli`.",
   "body": "",
   "preamble": ""
 }

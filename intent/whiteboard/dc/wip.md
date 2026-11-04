@@ -3,9 +3,9 @@ node: dc
 name: dc
 role: dc
 session_id: e2ea78f0-17a5-4962-8958-4cd22b32d155
-heartbeat_at: 2026-11-04 17:46Z
+heartbeat_at: 2026-11-04 19:53Z
 status: active
-focus: "ST0001 export through a temp file, then ST0002 CLI tests (hv's go); devbin scripts wait on pplr-vc"
+focus: "Folded for the night: ST0001 in review (follow-ups in its Context), ST0002 next tomorrow"
 claims: [ST0001, ST0002]
 ---
 
