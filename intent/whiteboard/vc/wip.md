@@ -3,9 +3,9 @@ node: vc
 name: vc
 role: vc
 session_id: a7964e2a-41ac-4e27-9095-c7acffd40341
-heartbeat_at: 2026-11-04 12:25Z
+heartbeat_at: 2026-11-04 19:53Z
 status: active
-focus: "Nothing in hand after Cldr v0.2.2; holds for pplr-vc's next instruction"
+focus: "Reviewed dc's ST0001 22074cc: code good, gates 0; five findings (ACs, intent/wip.md, two tests, temp file) sent to dc; review ST0002 when it lands"
 claims: []
 ---
 
