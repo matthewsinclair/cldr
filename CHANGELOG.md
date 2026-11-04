@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - unreleased
+
+### Changed
+
+- Documentation only: the README and the example config now match cldr as built. Only `render` and `briefing` write through a temporary file, and the example config shows `calendar.store` and explains `include`, `exclude` and `me`.
+
 ## [0.2.1] - 2026-11-04
 
 ### Changed

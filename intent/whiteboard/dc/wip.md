@@ -3,9 +3,9 @@ node: dc
 name: dc
 role: dc
 session_id: e2ea78f0-17a5-4962-8958-4cd22b32d155
-heartbeat_at: 2026-11-04 08:55Z
+heartbeat_at: 2026-11-04 09:02Z
 status: active
-focus: "Doc pass for hv: Cldr's docs in step with src at 01fba38 and leaned, in one commit; ready to compact."
+focus: "Cldr 0.2.2 notes for hv's patch cut, with cldr-vc's R1 and R2, in one commit; no board writes until v0.2.2 is pushed"
 claims: []
 ---
 

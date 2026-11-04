@@ -34,8 +34,8 @@ me = ["you@example.com", "you@work.example"]
 [bill]
 "@Acme" = 1.0
 
-# What counts as work and what is flagged: each key is a rule in the Rules section of
-# docs/notes/tn0001-cldr-design-note.md.
+# What counts as work and what is flagged, as docs/notes/tn0001-cldr-design-note.md sets out:
+# max_gap_hours under Sources of truth, every other key under Rules.
 [rules]
 exclude = ["[GYM]", "@personal"]
 zero_hours = ["Travel:"]
