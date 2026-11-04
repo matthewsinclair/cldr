@@ -219,9 +219,9 @@ fn export_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()
     return Err(format!("{} exists; --force to replace it", path.display()).into());
   }
   if let Some(parent) = path.parent() {
-    std::fs::create_dir_all(parent)?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
   }
-  std::fs::write(&path, text)?;
+  write_atomically(&path, &text)?;
   println!("{} ({} events)", path.display(), events.len());
   Ok(())
 }
@@ -512,4 +512,54 @@ fn briefing_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<
     day.strftime("%a %-d %b")
   );
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn temp_root(name: &str) -> Result<PathBuf> {
+    let root = std::env::temp_dir().join(format!("cldr-cli-{name}-{}", std::process::id()));
+    if root.exists() {
+      std::fs::remove_dir_all(&root)?;
+    }
+    std::fs::create_dir_all(&root)?;
+    Ok(root)
+  }
+
+  #[test]
+  fn a_file_is_replaced_whole_and_no_temporary_file_is_left() -> Result<()> {
+    let root = temp_root("replace")?;
+    let path = root.join("calendar.csv");
+    let (old, new) = ("old,row\n", "new,row\nanother,row\n");
+    std::fs::write(&path, old)?;
+    write_atomically(&path, new)?;
+    assert_eq!(std::fs::read_to_string(&path)?, new);
+    let left: Vec<_> = std::fs::read_dir(&root)?
+      .filter_map(|e| e.ok())
+      .map(|e| e.file_name())
+      .collect();
+    assert_eq!(left, [path.file_name().unwrap_or_default().to_owned()]);
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+  }
+
+  #[test]
+  fn a_failed_write_names_the_file() -> Result<()> {
+    let root = temp_root("missing")?;
+    let path = root.join("no-such-folder").join("calendar.csv");
+    let error = write_atomically(&path, "row\n")
+      .err()
+      .map(|e| e.to_string());
+    let missing = path
+      .parent()
+      .map(|p| p.display().to_string())
+      .unwrap_or_default();
+    assert!(
+      error.as_deref().is_some_and(|e| e.contains(&missing)),
+      "{error:?} names no file under {missing}"
+    );
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+  }
 }

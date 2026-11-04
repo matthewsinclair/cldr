@@ -1,0 +1,14 @@
+{
+  "id": "01M6KTPGB9ADS8S199G27W2B4F",
+  "ts": "2026-11-04T17:46:20.905Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "st.new",
+  "subject": {
+    "type": "thread",
+    "id": "ST0001"
+  },
+  "payload": {
+    "title": "cldr export writes through a temporary file"
+  }
+}

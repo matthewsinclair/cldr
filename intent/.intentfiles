@@ -28,3 +28,5 @@
 # Grammar: `<SIGIL>:<ID>`, sigil STEELTHREAD or ISSUE, optional trailing
 # `# comment`. Nothing else. A line the parser cannot read ABORTS the run with
 # its line number.
+STEELTHREAD:ST0001
+STEELTHREAD:ST0002

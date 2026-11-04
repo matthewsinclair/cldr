@@ -1,0 +1,12 @@
+{
+  "schema": "intent/thread@3.0",
+  "id": "ST0001",
+  "title": "cldr export writes through a temporary file",
+  "slug": "cldr-export-writes-through-a-temporary-file",
+  "status": "wip",
+  "created": "2026-11-04",
+  "objective": "`cldr export` writes its CSV through a temporary file and a rename, as `render` and `briefing` do, so an interrupted export never leaves half a CSV in place of a whole one; `--force` stays the only way to replace an existing CSV. Every write error names its file, as `intent/llm/RULES.md` requires: today `create_dir_all` and `std::fs::write` in `export_command` report a bare OS error.",
+  "context": "",
+  "body": "",
+  "preamble": ""
+}

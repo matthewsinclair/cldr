@@ -68,7 +68,7 @@ cldr export week --stdout      # what the calendar reader sees, as CSV
 cldr doctor                    # config, journal, zones, calendar access
 ```
 
-`cldr help` is the full list of commands and options. `--dry-run` shows what `render`, `briefing` or `month new` would write, and `render` and `briefing` write through a temporary file.
+`cldr help` is the full list of commands and options. `--dry-run` shows what `render`, `briefing` or `month new` would write, and `render`, `briefing` and `export` write through a temporary file.
 
 ## Developing
 
