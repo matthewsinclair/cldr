@@ -3,9 +3,9 @@ node: vc
 name: vc
 role: vc
 session_id: a7964e2a-41ac-4e27-9095-c7acffd40341
-heartbeat_at: 2026-11-04 08:59Z
+heartbeat_at: 2026-11-04 09:17Z
 status: active
-focus: "Next: verify Cldr's v0.2.2 tip for pplr-vc; no board writes until its push"
+focus: "Nothing in hand after Cldr v0.2.2; holds for pplr-vc's next instruction"
 claims: []
 ---
 
