@@ -4,7 +4,7 @@ An index of every steel thread in the project. A steel thread is a self-containe
 
 | ID     | Title                                              | Status    | Created    | Completed  |
 | ------ | -------------------------------------------------- | --------- | ---------- | ---------- |
-| ST0002 | CLI tests: the binary run over a generated journal | WIP       | 2026-11-04 |            |
+| ST0002 | CLI tests: the binary run over a generated journal | Completed | 2026-11-04 | 2026-11-06 |
 | ST0001 | cldr export writes through a temporary file        | Completed | 2026-11-04 | 2026-11-06 |
 
 ---

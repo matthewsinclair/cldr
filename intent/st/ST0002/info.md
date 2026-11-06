@@ -1,9 +1,9 @@
 ---
 st_id: ST0002
 title: CLI tests: the binary run over a generated journal
-status: WIP
+status: Completed
 created: 2026-11-04
-completed:
+completed: 2026-11-06
 ---
 
 # ST0002: CLI tests: the binary run over a generated journal
@@ -14,7 +14,11 @@ Tests under `tests/` that run the cldr binary over a generated journal, beside t
 
 ## Context
 
-Not started in code. hv's ruling (2026-11-04): share the synthetic BusyCal store builder. Move `calendar/busycal.rs`'s test `Store` into a `#[doc(hidden)] pub` module that can save to a file, so the unit tests and `tests/cli.rs` use one builder, and `briefing` and `export` are tested end to end against a synthetic store. `render`, `check` and `data` run with `--no-calendar` over a past month (2026-10), so today's date cannot change them. Cargo.toml: `autotests = false`, `[[test]]` for `packaging` and `cli`.
+Landed as 85101a4 on cldr-vc's verdict, as hv ruled on 2026-11-04:
+
+- One store builder: `calendar::busycal::fixture` and the archive builder it uses, `calendar::archive::build`, are `#[doc(hidden)] pub`, so the unit tests and `tests/cli.rs` build the synthetic BusyCal store one way. `Store::save` writes it to a file for a reader that opens it by path. The archive builder returns its plist write error instead of dropping it.
+- `tests/cli.rs` runs the binary over a generated journal, each test in its own sandbox: `CLDR_CONFIG` removed, `HOME` and the three XDG variables inside the sandbox, the config found through `XDG_CONFIG_HOME`, `journal.timezone` set, and every date past or named. It covers `render` run twice, `data` and `check`, `briefing` and `export` against a synthetic store, `month new` on a scratch tree, and `paths`.
+- `Cargo.toml` sets `autotests = false` and declares `packaging` and `cli` with `[[test]]`, so devbin's `check autotests` passes.
 
 ## Acceptance
 

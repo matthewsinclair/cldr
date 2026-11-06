@@ -1,6 +1,6 @@
 # TN0002: Cldr build record
 
-Status: steps 0 to 7 built. Open work is at the end. Design: [TN0001](tn0001-cldr-design-note.md).
+Status: steps 0 to 8 built. Open work is at the end. Design: [TN0001](tn0001-cldr-design-note.md).
 
 Each step ended with something usable on a real journal, so the old tooling could be retired one piece at a time.
 
@@ -17,6 +17,7 @@ Each step ended with something usable on a real journal, so the old tooling coul
 | 5    | `cldr render week` and `render month`: the month and week sections and the month's JSON; render twice, no change                                                                                                                                                                         | `363fd2b` `1766f11`           |
 | 6    | `cldr briefing` (a port of the old briefing script, with configured command blocks), `link` and `join` on events, `cldr render year`; the old journal tooling removed                                                                                                                    | `2115542`                     |
 | 7    | Release in one command, `bin/devbin release vX.Y.Z`, replacing `tools/release`: the gates and CI on a candidate, then post-cut builds the tag, signs and notarises the macOS binary and publishes the formula from that asset                                                            | `f382994` `b9ffbfd` `bd3bd35` |
+| 8    | Tests under `tests/` that run the binary over a generated journal (`tests/cli.rs`), each in its own sandbox, building the synthetic BusyCal store with the unit tests' one builder; `autotests = false`, each test target named                                                          | `85101a4`                     |
 
 Releases, and what each changed, are in [CHANGELOG.md](../../CHANGELOG.md).
 
@@ -30,5 +31,4 @@ Releases, and what each changed, are in [CHANGELOG.md](../../CHANGELOG.md).
 
 - **EventKit as a second source** (was step 3b): a reader behind `CalendarSource`, chosen by `calendar.source = "eventkit"`, its `unsafe` bindings in a crate of their own, since `Cargo.toml` forbids `unsafe_code` and no module can allow it; `cldr export` from both sources across a year, every difference explained, then EventKit as the default.
 - **`month new` renders and checks first**: render the closing month and stop if `check` reports what the user has not seen, before archiving it.
-- **CLI tests**: tests under `tests/` that run the binary over a generated journal, beside the unit tests. `tests/packaging.rs` is already a test target, and devbin's `check autotests` fails a second auto-discovered one, so they join that target, or the crate sets `autotests = false` and declares each with `[[test]]`.
 - **Retire `legacy.rs` and `check --activity-logs`** once no journal still compares against old Activity Logs.
