@@ -1,0 +1,16 @@
+{
+  "id": "01M6R4V3Y82V4EEE8AMZCY4WST",
+  "ts": "2026-11-06T10:00:35.528Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "wb.edit",
+  "subject": {
+    "type": "node",
+    "id": "vc"
+  },
+  "payload": {
+    "kind": "doing",
+    "seq": 1,
+    "text": "Validate dc's fixes on head before each commit, from the diff and dc's one measured run: ST0001 landed and verified (7cd73c1, e2723c1), ST0002 next, then cldr#0001"
+  }
+}
