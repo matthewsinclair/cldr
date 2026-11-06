@@ -1,0 +1,14 @@
+{
+  "id": "01M6R51KYW1PWCFA9MS8PDG7GV",
+  "ts": "2026-11-06T10:04:08.540Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "ac.satisfy",
+  "subject": {
+    "type": "ac",
+    "id": "ST0002/AC-07"
+  },
+  "payload": {
+    "evidence": "src/calendar/busycal.rs: #[doc(hidden)] pub mod fixture, with Store::save (vacuum into); busycal's unit tests use super::fixture and tests/cli.rs uses cldr::calendar::busycal::fixture::{Spec, Store}; its archive builder, calendar::archive::build, is #[doc(hidden)] pub too"
+  }
+}

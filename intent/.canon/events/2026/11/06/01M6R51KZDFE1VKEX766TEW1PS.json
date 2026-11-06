@@ -1,0 +1,14 @@
+{
+  "id": "01M6R51KZDFE1VKEX766TEW1PS",
+  "ts": "2026-11-06T10:04:08.557Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "ac.satisfy",
+  "subject": {
+    "type": "ac",
+    "id": "ST0002/AC-08"
+  },
+  "payload": {
+    "evidence": "Cargo.toml: autotests = false, [[test]] packaging and cli; bin/devbin check autotests exit 0 (declared, 2 targets, 0 in breach) in desk slot 01M6R4QKHAB9T5N9KGGXA6X42F at 2026-11-06 10:02Z by date -u"
+  }
+}

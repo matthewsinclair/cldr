@@ -5,6 +5,16 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/matthewsinclair/cldr"
 description = "A re-runnable renderer for a plain-text time journal, from Day Notes and the calendar"
+# devbin's check autotests fails a second auto-discovered test target, so each is named below.
+autotests = false
+
+[[test]]
+name = "packaging"
+path = "tests/packaging.rs"
+
+[[test]]
+name = "cli"
+path = "tests/cli.rs"
 
 [dependencies]
 # Human-editable configuration.

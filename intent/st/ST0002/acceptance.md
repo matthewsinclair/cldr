@@ -13,7 +13,119 @@ title: CLI tests: the binary run over a generated journal
 
 ## Acceptance Criteria
 
+### Group AC-01
+
+- AC-01 render run twice over a past month's Day Notes changes nothing the second time, and every line written by hand survives, in its order. -- satisfied: yes (computed)
+
+### Group AC-02
+
+- AC-02 data and check read a past month from the Day Notes with --no-calendar: the hours are the rows' sum under the configured spelling of their tag, and check writes nothing. -- satisfied: yes (computed)
+
+### Group AC-03
+
+- AC-03 briefing for a named day, against a synthetic store, fills the day's events and its configured block and points the root link at the month's briefing; run again for the same day, it changes nothing outside its markers. -- satisfied: yes (computed)
+
+### Group AC-04
+
+- AC-04 month new on a scratch tree creates the month's Day Notes from its template, moves the month before into YYYY/YYYYMM/ and repoints the root link. -- satisfied: yes (computed)
+
+### Group AC-05
+
+- AC-05 export against a synthetic store writes the month's CSV; without --force it refuses a CSV already there, naming it, and leaves it as it was; with --force it replaces it. -- satisfied: yes (computed)
+
+### Group AC-06
+
+- AC-06 No developer setup reaches a CLI test: CLDR_CONFIG is removed, and HOME, XDG_CONFIG_HOME, XDG_STATE_HOME and XDG_CACHE_HOME point inside the test's temporary root, so every path cldr resolves is inside it. -- satisfied: yes (computed)
+
+### Group AC-07
+
+- AC-07 (non-test) The unit tests and tests/cli.rs build their synthetic BusyCal store with one builder, calendar::busycal::fixture, public but hidden, which saves to a file. -- evidence: src/calendar/busycal.rs: #[doc(hidden)] pub mod fixture, with Store::save (vacuum into); busycal's unit tests use super::fixture and tests/cli.rs uses cldr::calendar::busycal::fixture::{Spec, Store}; its archive builder, calendar::archive::build, is #[doc(hidden)] pub too -- satisfied: yes
+
+### Group AC-08
+
+- AC-08 (non-test) The crate sets autotests = false and declares packaging and cli with [[test]], and devbin's check autotests passes. -- evidence: Cargo.toml: autotests = false, [[test]] packaging and cli; bin/devbin check autotests exit 0 (declared, 2 targets, 0 in breach) in desk slot 01M6R4QKHAB9T5N9KGGXA6X42F at 2026-11-06 10:02Z by date -u -- satisfied: yes
+
+### Group AT-01
+
+_(no criteria in this group)_
+
+### Group AT-02
+
+_(no criteria in this group)_
+
+### Group AT-03
+
+_(no criteria in this group)_
+
+### Group AT-04
+
+_(no criteria in this group)_
+
+### Group AT-05
+
+_(no criteria in this group)_
+
+### Group AT-06
+
+_(no criteria in this group)_
+
 ## Acceptance Tests
+
+### Group AC-01
+
+_(no tests in this group)_
+
+### Group AC-02
+
+_(no tests in this group)_
+
+### Group AC-03
+
+_(no tests in this group)_
+
+### Group AC-04
+
+_(no tests in this group)_
+
+### Group AC-05
+
+_(no tests in this group)_
+
+### Group AC-06
+
+_(no tests in this group)_
+
+### Group AC-07
+
+_(no tests in this group)_
+
+### Group AC-08
+
+_(no tests in this group)_
+
+### Group AT-01
+
+- AT-01 `tests/cli.rs` -- covers AC-01 -- status: green -- render_twice_changes_nothing_and_keeps_the_hand_written_text
+
+### Group AT-02
+
+- AT-02 `tests/cli.rs` -- covers AC-02 -- status: green -- data_reads_the_month_and_check_writes_nothing
+
+### Group AT-03
+
+- AT-03 `tests/cli.rs` -- covers AC-03 -- status: green -- briefing_fills_the_day_and_its_block_and_keeps_the_users_text
+
+### Group AT-04
+
+- AT-04 `tests/cli.rs` -- covers AC-04 -- status: green -- month_new_starts_the_month_archives_the_last_and_repoints_the_link
+
+### Group AT-05
+
+- AT-05 `tests/cli.rs` -- covers AC-05 -- status: green -- export_writes_the_months_csv_and_replaces_it_only_with_force
+
+### Group AT-06
+
+- AT-06 `tests/cli.rs` -- covers AC-06 -- status: green -- paths_resolve_inside_the_sandbox
 
 ---
 

@@ -57,12 +57,14 @@ pub fn integers(blob: &[u8]) -> Vec<i64> {
   }
 }
 
-#[cfg(test)]
+#[doc(hidden)]
 pub mod build {
-  //! Archives for tests, in the shape the store uses.
+  //! Archives for tests, in the shape the store uses: the unit tests' and `tests/cli.rs`'s one
+  //! builder, so it is public but hidden, and no part of cldr's own reading.
+  use crate::Result;
   use plist::{Dictionary, Uid, Value};
 
-  fn write(objects: Vec<Value>) -> Vec<u8> {
+  fn write(objects: Vec<Value>) -> Result<Vec<u8>> {
     let mut top = Dictionary::new();
     top.insert("root".into(), Value::Uid(Uid::new(1)));
     let mut dict = Dictionary::new();
@@ -71,13 +73,12 @@ pub mod build {
     dict.insert("$top".into(), Value::Dictionary(top));
     dict.insert("$objects".into(), Value::Array(objects));
     let mut out = Vec::new();
-    // Writing to a Vec cannot fail; a failure here would only empty the blob and fail the test.
-    let _ = Value::Dictionary(dict).to_writer_binary(&mut out);
-    out
+    Value::Dictionary(dict).to_writer_binary(&mut out)?;
+    Ok(out)
   }
 
   /// A string wrapped the way an attributed string is.
-  pub fn string(text: &str) -> Vec<u8> {
+  pub fn string(text: &str) -> Result<Vec<u8>> {
     let mut wrapper = Dictionary::new();
     wrapper.insert("NSString".into(), Value::Uid(Uid::new(2)));
     write(vec![
@@ -87,7 +88,7 @@ pub mod build {
     ])
   }
 
-  pub fn integers(values: &[i64]) -> Vec<u8> {
+  pub fn integers(values: &[i64]) -> Result<Vec<u8>> {
     let mut objects = vec![Value::String("$null".into())];
     objects.extend(values.iter().map(|v| Value::Integer((*v).into())));
     write(objects)
@@ -99,23 +100,26 @@ mod tests {
   use super::*;
 
   #[test]
-  fn a_wrapped_string_reads_back() {
+  fn a_wrapped_string_reads_back() -> crate::Result<()> {
     let text = "Weekly sync, room 2";
-    assert_eq!(string(&build::string(text)).as_deref(), Some(text));
+    assert_eq!(string(&build::string(text)?).as_deref(), Some(text));
+    Ok(())
   }
 
   #[test]
-  fn the_prefix_byte_is_ignored() {
+  fn the_prefix_byte_is_ignored() -> crate::Result<()> {
     let text = "Prefixed";
     let mut blob = vec![1];
-    blob.extend(build::string(text));
+    blob.extend(build::string(text)?);
     assert_eq!(string(&blob).as_deref(), Some(text));
+    Ok(())
   }
 
   #[test]
-  fn integer_lists_read_back_in_order() {
+  fn integer_lists_read_back_in_order() -> crate::Result<()> {
     let values = [1, 3, 5];
-    assert_eq!(integers(&build::integers(&values)), values);
+    assert_eq!(integers(&build::integers(&values)?), values);
+    Ok(())
   }
 
   #[test]

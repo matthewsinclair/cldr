@@ -8,5 +8,135 @@
   "objective": "Tests under `tests/` that run the cldr binary over a generated journal, beside the unit tests, as TN0002's Open section asks: `render` run twice changes nothing and leaves the text outside the markers intact, `briefing`, `month new` on a scratch tree, and `export`'s refusal without `--force`. All data is synthetic (`@acme`, `example.com`). devbin's `check autotests` fails a second auto-discovered target, so the crate sets `autotests = false` and declares `packaging` and `cli` by name.",
   "context": "Not started in code. hv's ruling (2026-11-04): share the synthetic BusyCal store builder. Move `calendar/busycal.rs`'s test `Store` into a `#[doc(hidden)] pub` module that can save to a file, so the unit tests and `tests/cli.rs` use one builder, and `briefing` and `export` are tested end to end against a synthetic store. `render`, `check` and `data` run with `--no-calendar` over a past month (2026-10), so today's date cannot change them. Cargo.toml: `autotests = false`, `[[test]]` for `packaging` and `cli`.",
   "body": "",
-  "preamble": ""
+  "preamble": "",
+  "criteria": [
+    {
+      "id": "AC-01",
+      "text": "render run twice over a past month's Day Notes changes nothing the second time, and every line written by hand survives, in its order.",
+      "kind": "test",
+      "state": {
+        "is": "computed"
+      }
+    },
+    {
+      "id": "AC-02",
+      "text": "data and check read a past month from the Day Notes with --no-calendar: the hours are the rows' sum under the configured spelling of their tag, and check writes nothing.",
+      "kind": "test",
+      "state": {
+        "is": "computed"
+      }
+    },
+    {
+      "id": "AC-03",
+      "text": "briefing for a named day, against a synthetic store, fills the day's events and its configured block and points the root link at the month's briefing; run again for the same day, it changes nothing outside its markers.",
+      "kind": "test",
+      "state": {
+        "is": "computed"
+      }
+    },
+    {
+      "id": "AC-04",
+      "text": "month new on a scratch tree creates the month's Day Notes from its template, moves the month before into YYYY/YYYYMM/ and repoints the root link.",
+      "kind": "test",
+      "state": {
+        "is": "computed"
+      }
+    },
+    {
+      "id": "AC-05",
+      "text": "export against a synthetic store writes the month's CSV; without --force it refuses a CSV already there, naming it, and leaves it as it was; with --force it replaces it.",
+      "kind": "test",
+      "state": {
+        "is": "computed"
+      }
+    },
+    {
+      "id": "AC-06",
+      "text": "No developer setup reaches a CLI test: CLDR_CONFIG is removed, and HOME, XDG_CONFIG_HOME, XDG_STATE_HOME and XDG_CACHE_HOME point inside the test's temporary root, so every path cldr resolves is inside it.",
+      "kind": "test",
+      "state": {
+        "is": "computed"
+      }
+    },
+    {
+      "id": "AC-07",
+      "text": "The unit tests and tests/cli.rs build their synthetic BusyCal store with one builder, calendar::busycal::fixture, public but hidden, which saves to a file.",
+      "kind": "non-test",
+      "state": {
+        "is": "satisfied",
+        "evidence": "src/calendar/busycal.rs: #[doc(hidden)] pub mod fixture, with Store::save (vacuum into); busycal's unit tests use super::fixture and tests/cli.rs uses cldr::calendar::busycal::fixture::{Spec, Store}; its archive builder, calendar::archive::build, is #[doc(hidden)] pub too"
+      }
+    },
+    {
+      "id": "AC-08",
+      "text": "The crate sets autotests = false and declares packaging and cli with [[test]], and devbin's check autotests passes.",
+      "kind": "non-test",
+      "state": {
+        "is": "satisfied",
+        "evidence": "Cargo.toml: autotests = false, [[test]] packaging and cli; bin/devbin check autotests exit 0 (declared, 2 targets, 0 in breach) in desk slot 01M6R4QKHAB9T5N9KGGXA6X42F at 2026-11-06 10:02Z by date -u"
+      }
+    }
+  ],
+  "tests": [
+    {
+      "id": "AT-01",
+      "kind": "test",
+      "file": "tests/cli.rs",
+      "covers": [
+        "AC-01"
+      ],
+      "status": "green",
+      "note": "render_twice_changes_nothing_and_keeps_the_hand_written_text"
+    },
+    {
+      "id": "AT-02",
+      "kind": "test",
+      "file": "tests/cli.rs",
+      "covers": [
+        "AC-02"
+      ],
+      "status": "green",
+      "note": "data_reads_the_month_and_check_writes_nothing"
+    },
+    {
+      "id": "AT-03",
+      "kind": "test",
+      "file": "tests/cli.rs",
+      "covers": [
+        "AC-03"
+      ],
+      "status": "green",
+      "note": "briefing_fills_the_day_and_its_block_and_keeps_the_users_text"
+    },
+    {
+      "id": "AT-04",
+      "kind": "test",
+      "file": "tests/cli.rs",
+      "covers": [
+        "AC-04"
+      ],
+      "status": "green",
+      "note": "month_new_starts_the_month_archives_the_last_and_repoints_the_link"
+    },
+    {
+      "id": "AT-05",
+      "kind": "test",
+      "file": "tests/cli.rs",
+      "covers": [
+        "AC-05"
+      ],
+      "status": "green",
+      "note": "export_writes_the_months_csv_and_replaces_it_only_with_force"
+    },
+    {
+      "id": "AT-06",
+      "kind": "test",
+      "file": "tests/cli.rs",
+      "covers": [
+        "AC-06"
+      ],
+      "status": "green",
+      "note": "paths_resolve_inside_the_sandbox"
+    }
+  ]
 }

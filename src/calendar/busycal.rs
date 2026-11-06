@@ -491,9 +491,10 @@ fn blob(row: &Row, index: usize) -> Option<Vec<u8>> {
   }
 }
 
-#[cfg(test)]
+#[doc(hidden)]
 pub mod fixture {
-  //! A synthetic store in the same shape, built by the tests.
+  //! A synthetic store in the same shape, built by the tests: the unit tests' and
+  //! `tests/cli.rs`'s one builder, so it is public but hidden, and no part of cldr's own reading.
 
   use super::*;
   use crate::calendar::archive::build;
@@ -552,6 +553,21 @@ pub mod fixture {
       Ok(Store { db, next: 1000 })
     }
 
+    /// Save the store as a file, replacing any there, for a reader that opens it by path.
+    pub fn save(&self, path: &Path) -> Result<()> {
+      if path.exists() {
+        std::fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
+      }
+      let target = path
+        .to_str()
+        .ok_or_else(|| format!("{}: not UTF-8", path.display()))?;
+      self
+        .db
+        .execute("vacuum into ?1", [target])
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+      Ok(())
+    }
+
     fn id(&mut self) -> i64 {
       self.next += 1;
       self.next
@@ -573,7 +589,7 @@ pub mod fixture {
       )?;
       self.db.execute(
         "insert into ZCOMMONDATA (Z_PK, Z_ENT, ZTITLE, ZLOCALHIDDEN, ZOBJECTINFO) values (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![pk, ENTITY_CALENDAR, build::string(name), i64::from(hidden), object],
+        rusqlite::params![pk, ENTITY_CALENDAR, build::string(name)?, i64::from(hidden), object],
       )?;
       Ok(pk)
     }
@@ -605,7 +621,7 @@ pub mod fixture {
         rusqlite::params![
           pk,
           entity,
-          build::string(spec.title),
+          build::string(spec.title)?,
           object,
           stamp_text(&spec.start),
           stamp_text(&spec.end),
@@ -628,7 +644,7 @@ pub mod fixture {
       self.db.execute(
         "insert into ZRECURRENCERULEEXTRA (Z_PK, ZFREQUENCY, ZINTERVAL, ZRRCOUNT, ZBYDAYDAYS, ZWEEKSTARTDAY, \
            ZEXCEPTIONDATES) values (?1, 1, 1, ?2, ?3, 0, ?4)",
-        rusqlite::params![pk, count, build::integers(days), exceptions.join(",")],
+        rusqlite::params![pk, count, build::integers(days)?, exceptions.join(",")],
       )?;
       Ok(pk)
     }
