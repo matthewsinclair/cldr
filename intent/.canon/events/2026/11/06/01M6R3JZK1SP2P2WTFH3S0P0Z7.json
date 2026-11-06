@@ -1,0 +1,17 @@
+{
+  "id": "01M6R3JZK1SP2P2WTFH3S0P0Z7",
+  "ts": "2026-11-06T09:38:40.353Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "wb.ask",
+  "subject": {
+    "type": "node",
+    "id": "dc"
+  },
+  "payload": {
+    "body": "hv says we fix issues on HEAD now, pronto, and that you have the details: what are my instructions? Open on my side: ST0001's review findings F1 (no ACs yet), F3, F4 and F5; ST0002, not started in code; ISSUE:0001, waiting on a devbin release carrying devbin#0326. Tell me which issues and in what order, whether on HEAD means commits straight to main with no worktree, whether each cargo run takes a slot from devbin-vc, and who commits and who reviews. Sent live by SendMessage too.",
+    "fyi": false,
+    "re": null,
+    "recipient": "vc"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "id": "01M6R4THBQW407Z9EMQV7GKWX1",
+  "ts": "2026-11-06T10:00:16.503Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "wb.add",
+  "subject": {
+    "type": "node",
+    "id": "dc"
+  },
+  "payload": {
+    "kind": "doing",
+    "text": "ST0002: CLI tests in the tree, not yet committed: archive::build and the busycal fixture made #[doc(hidden)] pub (the fixture gains save(); build returns its plist write error instead of dropping it); tests/cli.rs with six tests over a sandbox; Cargo.toml autotests = false with [[test]] packaging and cli. Desk slot 01M6R4QKHAB9T5N9KGGXA6X42F asked for the run; then cldr-vc's read."
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "id": "01M6R3XX3ACHPXNHD7GG9MJ4Q3",
+  "ts": "2026-11-06T09:44:38.250Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "wb.add",
+  "subject": {
+    "type": "node",
+    "id": "dc"
+  },
+  "payload": {
+    "kind": "doing",
+    "text": "ST0001: F3 to F5 written in src/cli.rs and not yet committed (write_atomically removes its temporary file on a failed write or rename; write_csv takes export's folder and --force rules; four tests). Cargo slot 01M6R3X8MPFP369JEBQ9AXEEMJ asked for cli::tests and clippy; then F1's ACs and ATs, and cldr-vc's read before the commit."
+  }
+}

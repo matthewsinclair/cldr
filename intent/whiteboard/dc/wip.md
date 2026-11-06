@@ -2,10 +2,10 @@
 node: dc
 name: dc
 role: dc
-session_id: e2ea78f0-17a5-4962-8958-4cd22b32d155
-heartbeat_at: 2026-11-04 19:53Z
+session_id: 317075ae-0c03-49fe-b25c-ccc741e1ff03
+heartbeat_at: 2026-11-06 09:44Z
 status: active
-focus: "Folded for the night: ST0001 in review (follow-ups in its Context), ST0002 next tomorrow"
+focus: "Fixing the outstanding issues on head: ST0001's follow-ups in a cargo slot, ST0002 next, ISSUE:0001 held for devbin's 0326 release"
 claims: [ST0001, ST0002]
 ---
 
@@ -13,15 +13,15 @@ claims: [ST0001, ST0002]
 
 ## DOING
 
-_(none)_
+- ST0002: CLI tests in the tree, not yet committed: archive::build and the busycal fixture made #[doc(hidden)] pub (the fixture gains save(); build returns its plist write error instead of dropping it); tests/cli.rs with six tests over a sandbox; Cargo.toml autotests = false with [[test]] packaging and cli. Desk slot 01M6R4QKHAB9T5N9KGGXA6X42F asked for the run; then cldr-vc's read.
 
 ## TODO
 
-_(none)_
+- ST0002: CLI tests as hv ruled on 2026-11-04 (one shared BusyCal store builder; tests/cli.rs; autotests = false). The sandbox clears exactly what cldr reads: CLDR_CONFIG, HOME, XDG_CONFIG_HOME, XDG_STATE_HOME, XDG_CACHE_HOME (config.rs:191, :246, :262; cli.rs:110, :114). A test that rests on today uses a past month or an explicit date. (edited)
 
 ## Holds
 
-_(none)_
+- ISSUE:0001 until a devbin release carrying devbin#0326 is vendored into Cldr (bin/devbin and bin/.devbin/lib at that release). Then: the install: block (link set cldr: target/release/cldr, opt prefix ~/opt/cldr, config.toml from examples/config.toml), the contract's snippet word for word from devbin-cc so that --version prints T4's line, and the formula on @@INSTALL@@ with the pkgshare link. cldr gains no use, install, version or tree verb, ever (devbin-vc's ruling on hv's word). (edited)
 
 ## Watch-outs
 

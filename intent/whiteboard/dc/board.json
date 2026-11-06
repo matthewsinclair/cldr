@@ -4,10 +4,10 @@
     "moniker": "dc",
     "name": "dc",
     "role": "dc",
-    "session_id": "e2ea78f0-17a5-4962-8958-4cd22b32d155",
-    "heartbeat_at": "2026-11-04T19:53:58.111Z",
+    "session_id": "317075ae-0c03-49fe-b25c-ccc741e1ff03",
+    "heartbeat_at": "2026-11-06T09:44:38.295Z",
     "status": "active",
-    "focus": "Folded for the night: ST0001 in review (follow-ups in its Context), ST0002 next tomorrow",
+    "focus": "Fixing the outstanding issues on head: ST0001's follow-ups in a cargo slot, ST0002 next, ISSUE:0001 held for devbin's 0326 release",
     "claims": [
       "ST0001",
       "ST0002"
@@ -15,7 +15,67 @@
     "recorded_at": "2026-11-04T04:52:39.685Z",
     "migrated_at": "2026-11-04T04:52:39.685Z"
   },
-  "items": [],
-  "sent": [],
-  "handled": []
+  "items": [
+    {
+      "node": "dc",
+      "kind": "doing",
+      "seq": 1,
+      "text": "ST0001: F3 to F5 written in src/cli.rs and not yet committed (write_atomically removes its temporary file on a failed write or rename; write_csv takes export's folder and --force rules; four tests). Cargo slot 01M6R3X8MPFP369JEBQ9AXEEMJ asked for cli::tests and clippy; then F1's ACs and ATs, and cldr-vc's read before the commit.",
+      "state": "archived",
+      "archived_at": "2026-11-06T10:00:16.486Z",
+      "recorded_at": "2026-11-06T09:44:38.250Z"
+    },
+    {
+      "node": "dc",
+      "kind": "hold",
+      "seq": 1,
+      "text": "ISSUE:0001 until a devbin release carrying devbin#0326 is vendored into Cldr (bin/devbin and bin/.devbin/lib at that release). Then: the install: block (link set cldr: target/release/cldr, opt prefix ~/opt/cldr, config.toml from examples/config.toml), the contract's snippet word for word from devbin-cc so that --version prints T4's line, and the formula on @@INSTALL@@ with the pkgshare link. cldr gains no use, install, version or tree verb, ever (devbin-vc's ruling on hv's word).",
+      "state": "live",
+      "recorded_at": "2026-11-06T09:44:38.266Z",
+      "edited_at": "2026-11-06T09:44:56.629Z"
+    },
+    {
+      "node": "dc",
+      "kind": "todo",
+      "seq": 1,
+      "text": "ST0002: CLI tests as hv ruled on 2026-11-04 (one shared BusyCal store builder; tests/cli.rs; autotests = false). The sandbox clears exactly what cldr reads: CLDR_CONFIG, HOME, XDG_CONFIG_HOME, XDG_STATE_HOME, XDG_CACHE_HOME (config.rs:191, :246, :262; cli.rs:110, :114). A test that rests on today uses a past month or an explicit date.",
+      "state": "live",
+      "recorded_at": "2026-11-06T09:44:38.281Z",
+      "edited_at": "2026-11-06T09:49:02.791Z"
+    },
+    {
+      "node": "dc",
+      "kind": "doing",
+      "seq": 2,
+      "text": "ST0002: CLI tests in the tree, not yet committed: archive::build and the busycal fixture made #[doc(hidden)] pub (the fixture gains save(); build returns its plist write error instead of dropping it); tests/cli.rs with six tests over a sandbox; Cargo.toml autotests = false with [[test]] packaging and cli. Desk slot 01M6R4QKHAB9T5N9KGGXA6X42F asked for the run; then cldr-vc's read.",
+      "state": "live",
+      "recorded_at": "2026-11-06T10:00:16.503Z"
+    }
+  ],
+  "sent": [
+    {
+      "id": "01M6R3JZK1SP2P2WTFH3S0P0Z8",
+      "recipient": "vc",
+      "body": "hv says we fix issues on HEAD now, pronto, and that you have the details: what are my instructions? Open on my side: ST0001's review findings F1 (no ACs yet), F3, F4 and F5; ST0002, not started in code; ISSUE:0001, waiting on a devbin release carrying devbin#0326. Tell me which issues and in what order, whether on HEAD means commits straight to main with no worktree, whether each cargo run takes a slot from devbin-vc, and who commits and who reviews. Sent live by SendMessage too.",
+      "fyi": false,
+      "recorded_at": "2026-11-06T09:38:40.353Z"
+    }
+  ],
+  "handled": [
+    {
+      "id": "01M6R43MXXZ1WJBWCNCEC8R76P",
+      "sender": "vc",
+      "handled_at": "2026-11-06T09:49:02.745Z"
+    },
+    {
+      "id": "01M6R49N0ZE1DX3V00J23Y7Z2J",
+      "sender": "vc",
+      "handled_at": "2026-11-06T10:00:16.470Z"
+    },
+    {
+      "id": "01M6R4Q7DDF66S5CFPNJAP80PX",
+      "sender": "vc",
+      "handled_at": "2026-11-06T10:00:16.470Z"
+    }
+  ]
 }

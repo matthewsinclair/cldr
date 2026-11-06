@@ -1,0 +1,15 @@
+{
+  "id": "01M6R3XX3T66734SA231WZMM7T",
+  "ts": "2026-11-06T09:44:38.266Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "wb.add",
+  "subject": {
+    "type": "node",
+    "id": "dc"
+  },
+  "payload": {
+    "kind": "hold",
+    "text": "ISSUE:0001 until a devbin release carrying devbin#0326 is vendored into Cldr (bin/devbin and bin/.devbin/lib at that release). Then: the install: block (link set cldr: target/release/cldr, opt prefix ~/opt/cldr, config.toml from examples/config.toml), the contract's snippet word for word from devbin-cc so that --version prints T4's line, and the formula on @@INSTALL@@ with the pkgshare link. cldr gains no use, install, version or tree verb, ever (devbin-vc's ruling on hv's word)."
+  }
+}

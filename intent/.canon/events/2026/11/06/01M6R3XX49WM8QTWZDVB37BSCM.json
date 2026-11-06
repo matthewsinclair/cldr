@@ -1,0 +1,15 @@
+{
+  "id": "01M6R3XX49WM8QTWZDVB37BSCM",
+  "ts": "2026-11-06T09:44:38.281Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "wb.add",
+  "subject": {
+    "type": "node",
+    "id": "dc"
+  },
+  "payload": {
+    "kind": "todo",
+    "text": "ST0002: CLI tests as hv ruled on 2026-11-04 (one shared BusyCal store builder; tests/cli.rs; autotests = false). The sandbox clears exactly what cldr reads: CLDR_CONFIG, HOME, XDG_CONFIG_HOME, XDG_STATE_HOME, XDG_CACHE_HOME (config.rs:191, :246, :262; cli.rs:110, :114). A test that rests on today uses a past month or an explicit date."
+  }
+}
