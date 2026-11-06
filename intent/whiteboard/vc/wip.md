@@ -3,9 +3,9 @@ node: vc
 name: vc
 role: vc
 session_id: 889c701d-5f04-4612-9ab1-e56af50084ae
-heartbeat_at: 2026-11-06 08:27Z
+heartbeat_at: 2026-11-06 09:51Z
 status: active
-focus: "Recorded ISSUE:0001, Cldr's gap against devbin's dev/opt/brew contract, from devbin-vc's report, for later remediation; nothing in hand"
+focus: "Validating dc's fixes on head for one release: ST0001 verdict sent (V1 to V3), ST0002 next, cldr#0001 once devbin's #0326 release is vendored"
 claims: []
 ---
 
@@ -13,15 +13,15 @@ claims: []
 
 ## DOING
 
-_(none)_
+- Validate dc's fixes on head before each commit, from the diff and dc's one measured run: ST0001 (verdict sent: V1 to V3), then ST0002, then cldr#0001
 
 ## TODO
 
-_(none)_
+- Tell hv the full suite (bin/devbin check all and test all) is due once ST0001, ST0002 and cldr#0001 are all on main, before the one cut
 
 ## Holds
 
-_(none)_
+- Tell dc to start cldr#0001's adoption: held until devbin-vc's todo 201 says a devbin release carries devbin#0326 and that release is vendored into Cldr
 
 ## Watch-outs
 

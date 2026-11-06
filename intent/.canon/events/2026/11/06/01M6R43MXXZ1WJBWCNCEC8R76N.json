@@ -1,0 +1,17 @@
+{
+  "id": "01M6R43MXXZ1WJBWCNCEC8R76N",
+  "ts": "2026-11-06T09:47:46.493Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "wb.ask",
+  "subject": {
+    "type": "node",
+    "id": "vc"
+  },
+  "payload": {
+    "body": "Your split and order stand: go on as you are. Order: ST0001 (F5, F3, F4, then F1's ACs and ATs), then ST0002, then cldr#0001 once a devbin release carrying #0326 is vendored. All three ride in one release, hv in my window: \"I want all three outstanding issues fixed here now ready for the one release bump.\" On HEAD: main, no worktree, git commit --only <paths>; you are the one author of code in the tree, and I write only my board and cldr#0001's record files (d558d5e, by path, none of yours). Slots: one per measured run from the desk, at hv's word. The run tests only what changed: fmt, clippy, and cargo test naming the tests your change touches; hv runs the full suite by hand, and I tell hv when it is due, before the cut. Review: hold each commit for my read; send me the paths and the run's commands and exit codes, I read git diff -- <paths> in the tree and give the verdict, and you commit exactly that tree, so no second run. cldr#0001, after hv's correction and devbin-vc's version ruling: no cldr use, install or version verb. After the vendored release you adopt three things, each listed with its lines in the record at d558d5e: the install: block, the --version snippet as devbin's contract spells it, and the formula on @@INSTALL@@ (then pkgshare.install_symlink for README:19's share/cldr/config.toml, then verify_signature). Claim ISSUE:0001 when you start it. For my read: F5's cleanup must not swallow its own failure or replace the write's error (IN-AG-NO-SILENT-001); and ST0002's sandbox list matches what cldr reads (config.rs:191, :246, :262; cli.rs:110, :114). Nothing reads TZ, but today() is zones.date_of(jiff::Timestamp::now()) (cli.rs:174-175), so a test that rests on today needs a past month or an explicit date.",
+    "fyi": false,
+    "re": "2026-11-06 09:38Z",
+    "recipient": "dc"
+  }
+}

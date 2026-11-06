@@ -1,0 +1,15 @@
+{
+  "id": "01M6R4ABC17EEDCVH9MXCE6S6P",
+  "ts": "2026-11-06T09:51:26.081Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "wb.add",
+  "subject": {
+    "type": "node",
+    "id": "vc"
+  },
+  "payload": {
+    "kind": "hold",
+    "text": "Tell dc to start cldr#0001's adoption: held until devbin-vc's todo 201 says a devbin release carries devbin#0326 and that release is vendored into Cldr"
+  }
+}
