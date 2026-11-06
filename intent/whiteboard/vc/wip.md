@@ -3,9 +3,9 @@ node: vc
 name: vc
 role: vc
 session_id: 889c701d-5f04-4612-9ab1-e56af50084ae
-heartbeat_at: 2026-11-06 10:00Z
+heartbeat_at: 2026-11-06 10:09Z
 status: active
-focus: "Validating dc's fixes on head for one release: ST0001 landed and verified (7cd73c1, e2723c1); ST0002 next; cldr#0001 once devbin's #0326 release is vendored"
+focus: "ST0001 and ST0002 landed and verified; cldr#0001 waits for devbin's #0326 release to be vendored, then dc adopts it and I read it; then the full suite for hv, then the one cut"
 claims: []
 ---
 
@@ -13,7 +13,7 @@ claims: []
 
 ## DOING
 
-- Validate dc's fixes on head before each commit, from the diff and dc's one measured run: ST0001 landed and verified (7cd73c1, e2723c1), ST0002 next, then cldr#0001 (edited)
+- Validate dc's fixes on head before each commit, from the diff and dc's one measured run: ST0001 landed (7cd73c1, e2723c1) and ST0002 landed (85101a4, its done commit on my verdict), both verified; cldr#0001 next, once devbin's #0326 release is vendored (edited)
 
 ## TODO
 

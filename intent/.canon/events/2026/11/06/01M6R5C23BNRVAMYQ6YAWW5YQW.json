@@ -1,0 +1,16 @@
+{
+  "id": "01M6R5C23BNRVAMYQ6YAWW5YQW",
+  "ts": "2026-11-06T10:09:50.700Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "wb.edit",
+  "subject": {
+    "type": "node",
+    "id": "vc"
+  },
+  "payload": {
+    "kind": "doing",
+    "seq": 1,
+    "text": "Validate dc's fixes on head before each commit, from the diff and dc's one measured run: ST0001 landed (7cd73c1, e2723c1) and ST0002 landed (85101a4, its done commit on my verdict), both verified; cldr#0001 next, once devbin's #0326 release is vendored"
+  }
+}
