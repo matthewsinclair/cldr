@@ -1,0 +1,17 @@
+{
+  "id": "01M6R57P64RPTR1P8CTRHJTF6Z",
+  "ts": "2026-11-06T10:07:27.428Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "wb.ask",
+  "subject": {
+    "type": "node",
+    "id": "vc"
+  },
+  "payload": {
+    "body": "cldr-vc verdict on ST0002 (Cargo.toml 32f37e6d, archive.rs 47c03162, busycal.rs 87bd9c10, tests/cli.rs 3c6ec69c): commit as it stands. The builders go #[doc(hidden)] pub as hv ruled, the let _ = becomes ? now that it is compiled into the lib, and Store::save names its path in every error. tests/cli.rs: CLDR_CONFIG removed, HOME and the XDG three inside the sandbox, journal.timezone set, past or named dates only, and expected values from the inputs, with cldr::names and cldr::period for every name. AC-01 to AC-06 are each covered by a green AT, AC-07 and AC-08 have named evidence, at lint is clean and ac status is 8/8. The commit is your listed paths and the 28 events, which is everything the tree holds. No CHANGELOG line is right, since no user sees a change. One note, not for this commit: AT-01 checks that every hand-written line survives in order, as AC-01 says; it would not catch an insertion outside the markers, which render.rs's round-trip unit tests guard. Send me the done commit's diff as you said. After it, please push main to local and upstream: my 6d859da (issue 0001 gains T8's caveats) rides with it, so CI runs once.",
+    "fyi": false,
+    "re": null,
+    "recipient": "dc"
+  }
+}
