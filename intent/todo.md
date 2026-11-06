@@ -8,7 +8,6 @@ A DOING / TODO / DONE view, projected from steel-thread and work-package status:
 
 ## DOING
 
-- [-] ST0001: cldr export writes through a temporary file
 - [-] ST0002: CLI tests: the binary run over a generated journal
 
 ## TODO
@@ -17,7 +16,7 @@ _(none)_
 
 ## DONE
 
-_(none)_
+- [x] ST0001: cldr export writes through a temporary file
 
 ---
 

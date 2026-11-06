@@ -1,9 +1,9 @@
 ---
 st_id: ST0001
 title: cldr export writes through a temporary file
-status: WIP
+status: Completed
 created: 2026-11-04
-completed:
+completed: 2026-11-06
 ---
 
 # ST0001: cldr export writes through a temporary file
@@ -14,14 +14,13 @@ completed:
 
 ## Context
 
-Landed as 22074cc; cldr-vc reviewed it (the code is right, gates rerun green in a fresh clone). Open before `st done`, from that review:
+Landed as 22074cc; cldr-vc reviewed it (the code is right, gates rerun green in a fresh clone). Its review's follow-ups landed as 7cd73c1, on cldr-vc's verdict:
 
-- F1: acceptance.md has no ACs: add them for the atomic replace (no half CSV, no temporary file left), every write error naming its file or folder, and `--force` as the only way to replace a CSV; ATs cite the two `cli.rs` tests.
-- F3: `a_failed_write_names_the_file` should assert the error contains the full CSV path, not just its folder.
-- F4: the folder-naming error from `create_dir_all` in `export_command` has no test (eg the parent is a regular file).
-- F5: `write_atomically` leaves `<file>.cldr-tmp` behind when the write or rename fails (render and briefing too); remove it on the error path.
-
-F3 to F5 are code and need a cargo slot.
+- F1: AC-01 (an export replaces its CSV whole, no temporary file left), AC-02 (every write error names its file or folder) and AC-03 (`--force` is the only way to replace a CSV), covered by AT-01 to AT-05, the five `cli.rs` tests.
+- F3: `a_failed_write_names_the_file` asserts the full CSV path.
+- F4: `write_csv` takes export's `--force` refusal and its folder out of `export_command`, and the folder's error has its test.
+- F5: a failed write or rename removes `<file>.cldr-tmp`, in render, briefing and export alike, and the error says so when it cannot.
+- cldr-vc's V1 to V3: the temporary file is synced before the rename; the tests' folder listings fail on an entry they cannot read; the CHANGELOG's 0.2.3 says what changed.
 
 ## Acceptance
 

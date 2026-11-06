@@ -3,10 +3,11 @@
   "id": "ST0001",
   "title": "cldr export writes through a temporary file",
   "slug": "cldr-export-writes-through-a-temporary-file",
-  "status": "wip",
+  "status": "completed",
   "created": "2026-11-04",
+  "completed": "2026-11-06",
   "objective": "`cldr export` writes its CSV through a temporary file and a rename, as `render` and `briefing` do, so an interrupted export never leaves half a CSV in place of a whole one; `--force` stays the only way to replace an existing CSV. Every write error names its file, as `intent/llm/RULES.md` requires: today `create_dir_all` and `std::fs::write` in `export_command` report a bare OS error.",
-  "context": "Landed as 22074cc; cldr-vc reviewed it (the code is right, gates rerun green in a fresh clone). Open before `st done`, from that review:\n\n- F1: acceptance.md has no ACs: add them for the atomic replace (no half CSV, no temporary file left), every write error naming its file or folder, and `--force` as the only way to replace a CSV; ATs cite the two `cli.rs` tests.\n- F3: `a_failed_write_names_the_file` should assert the error contains the full CSV path, not just its folder.\n- F4: the folder-naming error from `create_dir_all` in `export_command` has no test (eg the parent is a regular file).\n- F5: `write_atomically` leaves `<file>.cldr-tmp` behind when the write or rename fails (render and briefing too); remove it on the error path.\n\nF3 to F5 are code and need a cargo slot.",
+  "context": "Landed as 22074cc; cldr-vc reviewed it (the code is right, gates rerun green in a fresh clone). Its review's follow-ups landed as 7cd73c1, on cldr-vc's verdict:\n\n- F1: AC-01 (an export replaces its CSV whole, no temporary file left), AC-02 (every write error names its file or folder) and AC-03 (`--force` is the only way to replace a CSV), covered by AT-01 to AT-05, the five `cli.rs` tests.\n- F3: `a_failed_write_names_the_file` asserts the full CSV path.\n- F4: `write_csv` takes export's `--force` refusal and its folder out of `export_command`, and the folder's error has its test.\n- F5: a failed write or rename removes `<file>.cldr-tmp`, in render, briefing and export alike, and the error says so when it cannot.\n- cldr-vc's V1 to V3: the temporary file is synced before the rename; the tests' folder listings fail on an entry they cannot read; the CHANGELOG's 0.2.3 says what changed.",
   "body": "",
   "preamble": "",
   "criteria": [
