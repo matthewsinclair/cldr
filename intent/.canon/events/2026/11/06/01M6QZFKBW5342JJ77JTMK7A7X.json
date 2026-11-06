@@ -1,0 +1,15 @@
+{
+  "id": "01M6QZFKBW5342JJ77JTMK7A7X",
+  "ts": "2026-11-06T08:26:55.228Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "issues.add",
+  "subject": {
+    "type": "issue",
+    "id": "0001"
+  },
+  "payload": {
+    "severity": "medium",
+    "title": "Cldr has no dev/opt/brew switch, no tree identity and no contract version line; adopt devbin's one approach"
+  }
+}

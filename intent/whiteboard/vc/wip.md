@@ -2,10 +2,10 @@
 node: vc
 name: vc
 role: vc
-session_id: a7964e2a-41ac-4e27-9095-c7acffd40341
-heartbeat_at: 2026-11-04 19:53Z
+session_id: 889c701d-5f04-4612-9ab1-e56af50084ae
+heartbeat_at: 2026-11-06 08:27Z
 status: active
-focus: "Reviewed dc's ST0001 22074cc: code good, gates 0; five findings (ACs, intent/wip.md, two tests, temp file) sent to dc; review ST0002 when it lands"
+focus: "Recorded ISSUE:0001, Cldr's gap against devbin's dev/opt/brew contract, from devbin-vc's report, for later remediation; nothing in hand"
 claims: []
 ---
 
