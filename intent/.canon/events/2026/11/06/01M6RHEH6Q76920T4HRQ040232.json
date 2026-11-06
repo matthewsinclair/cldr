@@ -1,0 +1,16 @@
+{
+  "id": "01M6RHEH6Q76920T4HRQ040232",
+  "ts": "2026-11-06T13:40:54.615Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "wb.edit",
+  "subject": {
+    "type": "node",
+    "id": "vc"
+  },
+  "payload": {
+    "kind": "todo",
+    "seq": 1,
+    "text": "Tell hv the full suite (bin/devbin check all and test all) is due once cldr#0001 is on main, where ST0001 and ST0002 already are, before the one cut"
+  }
+}

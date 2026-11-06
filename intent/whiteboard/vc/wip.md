@@ -3,7 +3,7 @@ node: vc
 name: vc
 role: vc
 session_id: 889c701d-5f04-4612-9ab1-e56af50084ae
-heartbeat_at: 2026-11-06 10:09Z
+heartbeat_at: 2026-11-06 13:40Z
 status: active
 focus: "ST0001 and ST0002 landed and verified; cldr#0001 waits for devbin's #0326 release to be vendored, then dc adopts it and I read it; then the full suite for hv, then the one cut"
 claims: []
@@ -13,15 +13,15 @@ claims: []
 
 ## DOING
 
-- Validate dc's fixes on head before each commit, from the diff and dc's one measured run: ST0001 landed (7cd73c1, e2723c1) and ST0002 landed (85101a4, its done commit on my verdict), both verified; cldr#0001 next, once devbin's #0326 release is vendored (edited)
+_(none)_
 
 ## TODO
 
-- Tell hv the full suite (bin/devbin check all and test all) is due once ST0001, ST0002 and cldr#0001 are all on main, before the one cut
+- Tell hv the full suite (bin/devbin check all and test all) is due once cldr#0001 is on main, where ST0001 and ST0002 already are, before the one cut (edited)
 
 ## Holds
 
-- Tell dc to start cldr#0001's adoption: held until devbin-vc's todo 201 says a devbin release carries devbin#0326 and that release is vendored into Cldr
+- Tell dc to start cldr#0001's adoption, then read its diff and one measured run before it lands: held until devbin-vc's todo 201 says a devbin release carries devbin#0326 and that release is vendored into Cldr (edited)
 
 ## Watch-outs
 
