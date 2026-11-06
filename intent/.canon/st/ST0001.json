@@ -8,5 +8,83 @@
   "objective": "`cldr export` writes its CSV through a temporary file and a rename, as `render` and `briefing` do, so an interrupted export never leaves half a CSV in place of a whole one; `--force` stays the only way to replace an existing CSV. Every write error names its file, as `intent/llm/RULES.md` requires: today `create_dir_all` and `std::fs::write` in `export_command` report a bare OS error.",
   "context": "Landed as 22074cc; cldr-vc reviewed it (the code is right, gates rerun green in a fresh clone). Open before `st done`, from that review:\n\n- F1: acceptance.md has no ACs: add them for the atomic replace (no half CSV, no temporary file left), every write error naming its file or folder, and `--force` as the only way to replace a CSV; ATs cite the two `cli.rs` tests.\n- F3: `a_failed_write_names_the_file` should assert the error contains the full CSV path, not just its folder.\n- F4: the folder-naming error from `create_dir_all` in `export_command` has no test (eg the parent is a regular file).\n- F5: `write_atomically` leaves `<file>.cldr-tmp` behind when the write or rename fails (render and briefing too); remove it on the error path.\n\nF3 to F5 are code and need a cargo slot.",
   "body": "",
-  "preamble": ""
+  "preamble": "",
+  "criteria": [
+    {
+      "id": "AC-01",
+      "text": "An export replaces its CSV whole, through a temporary file and a rename, so an interrupted export never leaves half a CSV in place of a whole one, and no temporary file is left behind, whether the write succeeds or fails.",
+      "kind": "test",
+      "state": {
+        "is": "computed"
+      }
+    },
+    {
+      "id": "AC-02",
+      "text": "Every write error an export reports names its file or its folder.",
+      "kind": "test",
+      "state": {
+        "is": "computed"
+      }
+    },
+    {
+      "id": "AC-03",
+      "text": "--force is the only way to replace an existing CSV: without it, an export refuses, names the CSV and leaves it as it was.",
+      "kind": "test",
+      "state": {
+        "is": "computed"
+      }
+    }
+  ],
+  "tests": [
+    {
+      "id": "AT-01",
+      "kind": "test",
+      "file": "src/cli.rs",
+      "covers": [
+        "AC-01"
+      ],
+      "status": "green",
+      "note": "cli::tests::a_file_is_replaced_whole_and_no_temporary_file_is_left"
+    },
+    {
+      "id": "AT-02",
+      "kind": "test",
+      "file": "src/cli.rs",
+      "covers": [
+        "AC-01"
+      ],
+      "status": "green",
+      "note": "cli::tests::a_failed_rename_leaves_no_temporary_file; red against the old write_atomically, which left calendar.csv.cldr-tmp"
+    },
+    {
+      "id": "AT-03",
+      "kind": "test",
+      "file": "src/cli.rs",
+      "covers": [
+        "AC-02"
+      ],
+      "status": "green",
+      "note": "cli::tests::a_failed_write_names_the_file"
+    },
+    {
+      "id": "AT-04",
+      "kind": "test",
+      "file": "src/cli.rs",
+      "covers": [
+        "AC-02"
+      ],
+      "status": "green",
+      "note": "cli::tests::a_csv_whose_folder_cannot_be_made_names_the_folder"
+    },
+    {
+      "id": "AT-05",
+      "kind": "test",
+      "file": "src/cli.rs",
+      "covers": [
+        "AC-03"
+      ],
+      "status": "green",
+      "note": "cli::tests::a_csv_already_there_is_replaced_only_with_force"
+    }
+  ]
 }

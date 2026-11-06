@@ -215,15 +215,20 @@ fn export_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()
     .journal_root()?
     .ok_or("journal.root is not set; use --stdout or set it in the config")?;
   let path = period.file(&root);
+  write_csv(&path, &text, force)?;
+  println!("{} ({} events)", path.display(), events.len());
+  Ok(())
+}
+
+/// Write an export's CSV, making its folder; only `force` replaces a CSV already there.
+fn write_csv(path: &std::path::Path, text: &str, force: bool) -> Result<()> {
   if path.exists() && !force {
     return Err(format!("{} exists; --force to replace it", path.display()).into());
   }
   if let Some(parent) = path.parent() {
     std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
   }
-  write_atomically(&path, &text)?;
-  println!("{} ({} events)", path.display(), events.len());
-  Ok(())
+  write_atomically(path, text)
 }
 
 /// The model for a period, as `data` and `check` both build it.
@@ -435,14 +440,29 @@ fn render_year(config: &Config, year: i16, dry_run: bool, no_calendar: bool) -> 
   Ok(())
 }
 
-/// Write through a temporary file beside the target, so a reader never sees half a file.
+/// Write through a temporary file beside the target, synced before the rename, so a reader never
+/// sees half a file. A failed write or rename removes the temporary file, and says so if it cannot.
 fn write_atomically(path: &std::path::Path, text: &str) -> Result<()> {
   let mut tmp = path.as_os_str().to_owned();
   tmp.push(".cldr-tmp");
   let tmp = PathBuf::from(tmp);
-  std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
-  std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))?;
-  Ok(())
+  let mut file = std::fs::File::create(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+  let written =
+    std::io::Write::write_all(&mut file, text.as_bytes()).and_then(|()| file.sync_all());
+  drop(file);
+  let result = match written {
+    Ok(()) => std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display())),
+    Err(e) => Err(format!("{}: {e}", tmp.display())),
+  };
+  let Err(error) = result else {
+    return Ok(());
+  };
+  match std::fs::remove_file(&tmp) {
+    Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+      Err(format!("{error}; {} is left behind: {e}", tmp.display()).into())
+    }
+    _ => Err(error.into()),
+  }
 }
 
 fn briefing_command(explicit: Option<PathBuf>, mut args: Vec<String>) -> Result<()> {
@@ -527,6 +547,14 @@ mod tests {
     Ok(root)
   }
 
+  /// The names in a folder; an entry that cannot be read fails the test rather than vanishing.
+  fn names_in(root: &std::path::Path) -> Result<Vec<std::ffi::OsString>> {
+    std::fs::read_dir(root)?
+      .map(|e| -> Result<std::ffi::OsString> { Ok(e?.file_name()) })
+      .collect()
+  }
+
+  // ST0001 AT-01
   #[test]
   fn a_file_is_replaced_whole_and_no_temporary_file_is_left() -> Result<()> {
     let root = temp_root("replace")?;
@@ -535,15 +563,15 @@ mod tests {
     std::fs::write(&path, old)?;
     write_atomically(&path, new)?;
     assert_eq!(std::fs::read_to_string(&path)?, new);
-    let left: Vec<_> = std::fs::read_dir(&root)?
-      .filter_map(|e| e.ok())
-      .map(|e| e.file_name())
-      .collect();
-    assert_eq!(left, [path.file_name().unwrap_or_default().to_owned()]);
+    assert_eq!(
+      names_in(&root)?,
+      [path.file_name().unwrap_or_default().to_owned()]
+    );
     std::fs::remove_dir_all(&root)?;
     Ok(())
   }
 
+  // ST0001 AT-03
   #[test]
   fn a_failed_write_names_the_file() -> Result<()> {
     let root = temp_root("missing")?;
@@ -551,14 +579,76 @@ mod tests {
     let error = write_atomically(&path, "row\n")
       .err()
       .map(|e| e.to_string());
-    let missing = path
-      .parent()
-      .map(|p| p.display().to_string())
-      .unwrap_or_default();
+    let shown = path.display().to_string();
     assert!(
-      error.as_deref().is_some_and(|e| e.contains(&missing)),
-      "{error:?} names no file under {missing}"
+      error.as_deref().is_some_and(|e| e.contains(&shown)),
+      "{error:?} does not name {shown}"
     );
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+  }
+
+  // ST0001 AT-02
+  #[test]
+  fn a_failed_rename_leaves_no_temporary_file() -> Result<()> {
+    let root = temp_root("rename")?;
+    // A folder where the file goes: the temporary file is written, the rename refused
+    let path = root.join("calendar.csv");
+    std::fs::create_dir(&path)?;
+    let error = write_atomically(&path, "row\n")
+      .err()
+      .map(|e| e.to_string());
+    let shown = path.display().to_string();
+    assert!(
+      error.as_deref().is_some_and(|e| e.contains(&shown)),
+      "{error:?} does not name {shown}"
+    );
+    assert_eq!(
+      names_in(&root)?,
+      [path.file_name().unwrap_or_default().to_owned()]
+    );
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+  }
+
+  // ST0001 AT-04
+  #[test]
+  fn a_csv_whose_folder_cannot_be_made_names_the_folder() -> Result<()> {
+    let root = temp_root("folder")?;
+    // A plain file where the CSV's folder goes
+    let folder = root.join("2026");
+    std::fs::write(&folder, "not a folder\n")?;
+    let error = write_csv(&folder.join("calendar.csv"), "row\n", false)
+      .err()
+      .map(|e| e.to_string());
+    let shown = format!("{}: ", folder.display());
+    assert!(
+      error.as_deref().is_some_and(|e| e.starts_with(&shown)),
+      "{error:?} does not name the folder {}",
+      folder.display()
+    );
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+  }
+
+  // ST0001 AT-05
+  #[test]
+  fn a_csv_already_there_is_replaced_only_with_force() -> Result<()> {
+    let root = temp_root("force")?;
+    let path = root.join("calendar.csv");
+    let (old, new) = ("old,row\n", "new,row\nanother,row\n");
+    std::fs::write(&path, old)?;
+    let error = write_csv(&path, new, false).err().map(|e| e.to_string());
+    let shown = path.display().to_string();
+    assert!(
+      error
+        .as_deref()
+        .is_some_and(|e| e.contains(&shown) && e.contains("--force")),
+      "{error:?} does not refuse {shown}"
+    );
+    assert_eq!(std::fs::read_to_string(&path)?, old);
+    write_csv(&path, new, true)?;
+    assert_eq!(std::fs::read_to_string(&path)?, new);
     std::fs::remove_dir_all(&root)?;
     Ok(())
   }

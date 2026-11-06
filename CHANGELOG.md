@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ### Changed
 
 - `cldr export` writes its CSV through a temporary file and a rename, as `render` and `briefing` do, so an interrupted export never leaves half a CSV behind. When it cannot create the folder or write the file, the error names it.
+- A failed write or rename in `render`, `briefing` and `export` removes its temporary file, and the error says so when it cannot. The temporary file is synced to disk before it replaces the target, so a write the disk refuses late fails instead of leaving a short file in the target's place.
 
 ## [0.2.2] - 2026-11-04
 

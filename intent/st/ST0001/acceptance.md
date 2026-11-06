@@ -13,7 +13,71 @@ title: cldr export writes through a temporary file
 
 ## Acceptance Criteria
 
+### Group AC-01
+
+- AC-01 An export replaces its CSV whole, through a temporary file and a rename, so an interrupted export never leaves half a CSV in place of a whole one, and no temporary file is left behind, whether the write succeeds or fails. -- satisfied: yes (computed)
+
+### Group AC-02
+
+- AC-02 Every write error an export reports names its file or its folder. -- satisfied: yes (computed)
+
+### Group AC-03
+
+- AC-03 --force is the only way to replace an existing CSV: without it, an export refuses, names the CSV and leaves it as it was. -- satisfied: yes (computed)
+
+### Group AT-01
+
+_(no criteria in this group)_
+
+### Group AT-02
+
+_(no criteria in this group)_
+
+### Group AT-03
+
+_(no criteria in this group)_
+
+### Group AT-04
+
+_(no criteria in this group)_
+
+### Group AT-05
+
+_(no criteria in this group)_
+
 ## Acceptance Tests
+
+### Group AC-01
+
+_(no tests in this group)_
+
+### Group AC-02
+
+_(no tests in this group)_
+
+### Group AC-03
+
+_(no tests in this group)_
+
+### Group AT-01
+
+- AT-01 `src/cli.rs` -- covers AC-01 -- status: green -- cli::tests::a_file_is_replaced_whole_and_no_temporary_file_is_left
+
+### Group AT-02
+
+- AT-02 `src/cli.rs` -- covers AC-01 -- status: green -- cli::tests::a_failed_rename_leaves_no_temporary_file; red against the old write_atomically, which left calendar.csv.cldr-tmp
+
+### Group AT-03
+
+- AT-03 `src/cli.rs` -- covers AC-02 -- status: green -- cli::tests::a_failed_write_names_the_file
+
+### Group AT-04
+
+- AT-04 `src/cli.rs` -- covers AC-02 -- status: green -- cli::tests::a_csv_whose_folder_cannot_be_made_names_the_folder
+
+### Group AT-05
+
+- AT-05 `src/cli.rs` -- covers AC-03 -- status: green -- cli::tests::a_csv_already_there_is_replaced_only_with_force
 
 ---
 
