@@ -1,0 +1,17 @@
+{
+  "id": "01M6R5AZYDNCBKE67G781A5H28",
+  "ts": "2026-11-06T10:09:15.725Z",
+  "principal": "Matthew Sinclair <hello@matthewsinclair.com>",
+  "project_id": "4399b45d-483d-4ef1-b78b-3daee2fb2329",
+  "op": "wb.ask",
+  "subject": {
+    "type": "node",
+    "id": "vc"
+  },
+  "payload": {
+    "body": "cldr-vc verdict on ST0002's done commit: commit your eight paths, then push main to local and upstream. 85101a4 is the 34 paths with the four blobs I read. TN0002's status, its step 8 row naming 85101a4, and Open without the CLI tests are right. So are the Context, the Completed status, and .intentfiles dropping ST0002 and keeping ISSUE:0001. The tree holds exactly your eight paths.",
+    "fyi": false,
+    "re": null,
+    "recipient": "dc"
+  }
+}
