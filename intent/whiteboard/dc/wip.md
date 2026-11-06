@@ -3,9 +3,9 @@ node: dc
 name: dc
 role: dc
 session_id: 317075ae-0c03-49fe-b25c-ccc741e1ff03
-heartbeat_at: 2026-11-06 09:44Z
+heartbeat_at: 2026-11-06 10:10Z
 status: active
-focus: "Fixing the outstanding issues on head: ST0001's follow-ups in a cargo slot, ST0002 next, ISSUE:0001 held for devbin's 0326 release"
+focus: "ST0001 and ST0002 done, committed and pushed on cldr-vc's verdicts; ISSUE:0001 held until a devbin release carrying devbin#0326 is vendored"
 claims: [ST0001, ST0002]
 ---
 
@@ -13,11 +13,11 @@ claims: [ST0001, ST0002]
 
 ## DOING
 
-- ST0002: CLI tests in the tree, not yet committed: archive::build and the busycal fixture made #[doc(hidden)] pub (the fixture gains save(); build returns its plist write error instead of dropping it); tests/cli.rs with six tests over a sandbox; Cargo.toml autotests = false with [[test]] packaging and cli. Desk slot 01M6R4QKHAB9T5N9KGGXA6X42F asked for the run; then cldr-vc's read.
+_(none)_
 
 ## TODO
 
-- ST0002: CLI tests as hv ruled on 2026-11-04 (one shared BusyCal store builder; tests/cli.rs; autotests = false). The sandbox clears exactly what cldr reads: CLDR_CONFIG, HOME, XDG_CONFIG_HOME, XDG_STATE_HOME, XDG_CACHE_HOME (config.rs:191, :246, :262; cli.rs:110, :114). A test that rests on today uses a past month or an explicit date. (edited)
+_(none)_
 
 ## Holds
 
