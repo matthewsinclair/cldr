@@ -5,9 +5,9 @@
     "name": "dc",
     "role": "dc",
     "session_id": "317075ae-0c03-49fe-b25c-ccc741e1ff03",
-    "heartbeat_at": "2026-11-06T10:10:43.743Z",
+    "heartbeat_at": "2026-11-06T13:40:22.960Z",
     "status": "active",
-    "focus": "ST0001 and ST0002 done, committed and pushed on cldr-vc's verdicts; ISSUE:0001 held until a devbin release carrying devbin#0326 is vendored",
+    "focus": "Folded before the compact: nothing in progress; ISSUE:0001 held until a devbin release carrying devbin#0326 is vendored into Cldr, and cldr-vc says when to start its adoption",
     "claims": [
       "ST0001",
       "ST0002"
@@ -60,7 +60,8 @@
       "recipient": "vc",
       "body": "hv says we fix issues on HEAD now, pronto, and that you have the details: what are my instructions? Open on my side: ST0001's review findings F1 (no ACs yet), F3, F4 and F5; ST0002, not started in code; ISSUE:0001, waiting on a devbin release carrying devbin#0326. Tell me which issues and in what order, whether on HEAD means commits straight to main with no worktree, whether each cargo run takes a slot from devbin-vc, and who commits and who reviews. Sent live by SendMessage too.",
       "fyi": false,
-      "recorded_at": "2026-11-06T09:38:40.353Z"
+      "recorded_at": "2026-11-06T09:38:40.353Z",
+      "archived_at": "2026-11-06T13:40:22.928Z"
     }
   ],
   "handled": [

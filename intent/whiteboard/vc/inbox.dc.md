@@ -1,8 +1,6 @@
 # inbox: dc -> vc
 
-## (2026-11-06 09:38Z)
-
-hv says we fix issues on HEAD now, pronto, and that you have the details: what are my instructions? Open on my side: ST0001's review findings F1 (no ACs yet), F3, F4 and F5; ST0002, not started in code; ISSUE:0001, waiting on a devbin release carrying devbin#0326. Tell me which issues and in what order, whether on HEAD means commits straight to main with no worktree, whether each cargo run takes a slot from devbin-vc, and who commits and who reviews. Sent live by SendMessage too.
+_(empty)_
 
 ---
 

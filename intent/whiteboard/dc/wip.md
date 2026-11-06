@@ -3,9 +3,9 @@ node: dc
 name: dc
 role: dc
 session_id: 317075ae-0c03-49fe-b25c-ccc741e1ff03
-heartbeat_at: 2026-11-06 10:10Z
+heartbeat_at: 2026-11-06 13:40Z
 status: active
-focus: "ST0001 and ST0002 done, committed and pushed on cldr-vc's verdicts; ISSUE:0001 held until a devbin release carrying devbin#0326 is vendored"
+focus: "Folded before the compact: nothing in progress; ISSUE:0001 held until a devbin release carrying devbin#0326 is vendored into Cldr, and cldr-vc says when to start its adoption"
 claims: [ST0001, ST0002]
 ---
 
