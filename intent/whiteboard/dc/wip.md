@@ -1,7 +1,7 @@
 ---
 node: dc
-name: dc
-role: dc
+name: DevX Claude
+role: devx
 session_id: 317075ae-0c03-49fe-b25c-ccc741e1ff03
 heartbeat_at: 2026-11-06 13:40Z
 status: active
@@ -9,7 +9,7 @@ focus: "Folded before the compact: nothing in progress; ISSUE:0001 held until a 
 claims: [ST0001, ST0002]
 ---
 
-# dc (dc)
+# DevX Claude (dc)
 
 ## DOING
 

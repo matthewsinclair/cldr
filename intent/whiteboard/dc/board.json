@@ -1,9 +1,9 @@
 {
-  "schema": "intent/board@4.0",
+  "schema": "intent/board@4.1",
   "node": {
     "moniker": "dc",
-    "name": "dc",
-    "role": "dc",
+    "name": "DevX Claude",
+    "role": "devx",
     "session_id": "317075ae-0c03-49fe-b25c-ccc741e1ff03",
     "heartbeat_at": "2026-11-06T13:40:22.960Z",
     "status": "active",

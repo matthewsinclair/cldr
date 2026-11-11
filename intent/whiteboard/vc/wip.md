@@ -1,7 +1,7 @@
 ---
 node: vc
-name: vc
-role: vc
+name: Validation Claude
+role: validation
 session_id: 889c701d-5f04-4612-9ab1-e56af50084ae
 heartbeat_at: 2026-11-06 13:40Z
 status: active
@@ -9,7 +9,7 @@ focus: "ST0001 and ST0002 landed and verified; cldr#0001 waits for devbin's #032
 claims: []
 ---
 
-# vc (vc)
+# Validation Claude (vc)
 
 ## DOING
 

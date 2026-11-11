@@ -1,0 +1,8 @@
+{
+  "schema": "intent/team-declaration@1.0",
+  "base": "team",
+  "layers": [],
+  "mediator": "vc",
+  "human": "hv",
+  "readme_baseline": "488ba948de5b50a3cff2110820b019e04de8b9c337ee4cb8bffb4aaf9c4d2ae7"
+}
