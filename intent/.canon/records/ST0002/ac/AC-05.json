@@ -1,0 +1,8 @@
+{
+  "id": "AC-05",
+  "text": "export against a synthetic store writes the month's CSV; without --force it refuses a CSV already there, naming it, and leaves it as it was; with --force it replaces it.",
+  "kind": "test",
+  "state": {
+    "is": "computed"
+  }
+}

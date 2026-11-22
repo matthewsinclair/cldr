@@ -1,0 +1,8 @@
+{
+  "id": "AC-01",
+  "text": "render run twice over a past month's Day Notes changes nothing the second time, and every line written by hand survives, in its order.",
+  "kind": "test",
+  "state": {
+    "is": "computed"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "id": "AC-08",
+  "text": "The crate sets autotests = false and declares packaging and cli with [[test]], and devbin's check autotests passes.",
+  "kind": "non-test",
+  "state": {
+    "is": "satisfied",
+    "evidence": "Cargo.toml: autotests = false, [[test]] packaging and cli; bin/devbin check autotests exit 0 (declared, 2 targets, 0 in breach) in desk slot 01M6R4QKHAB9T5N9KGGXA6X42F at 2026-11-06 10:02Z by date -u"
+  }
+}

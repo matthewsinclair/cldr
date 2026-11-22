@@ -1,0 +1,8 @@
+{
+  "id": "AC-03",
+  "text": "briefing for a named day, against a synthetic store, fills the day's events and its configured block and points the root link at the month's briefing; run again for the same day, it changes nothing outside its markers.",
+  "kind": "test",
+  "state": {
+    "is": "computed"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "id": "AT-06",
+  "kind": "test",
+  "file": "tests/cli.rs",
+  "covers": [
+    "AC-06"
+  ],
+  "status": "green",
+  "note": "paths_resolve_inside_the_sandbox"
+}

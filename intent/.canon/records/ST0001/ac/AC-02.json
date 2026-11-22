@@ -1,0 +1,8 @@
+{
+  "id": "AC-02",
+  "text": "Every write error an export reports names its file or its folder.",
+  "kind": "test",
+  "state": {
+    "is": "computed"
+  }
+}

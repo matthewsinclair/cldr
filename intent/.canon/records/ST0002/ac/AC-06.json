@@ -1,0 +1,8 @@
+{
+  "id": "AC-06",
+  "text": "No developer setup reaches a CLI test: CLDR_CONFIG is removed, and HOME, XDG_CONFIG_HOME, XDG_STATE_HOME and XDG_CACHE_HOME point inside the test's temporary root, so every path cldr resolves is inside it.",
+  "kind": "test",
+  "state": {
+    "is": "computed"
+  }
+}

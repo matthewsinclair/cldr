@@ -1,0 +1,10 @@
+{
+  "id": "AT-01",
+  "kind": "test",
+  "file": "src/cli.rs",
+  "covers": [
+    "AC-01"
+  ],
+  "status": "green",
+  "note": "cli::tests::a_file_is_replaced_whole_and_no_temporary_file_is_left"
+}

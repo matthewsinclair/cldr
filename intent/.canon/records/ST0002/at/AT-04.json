@@ -1,0 +1,10 @@
+{
+  "id": "AT-04",
+  "kind": "test",
+  "file": "tests/cli.rs",
+  "covers": [
+    "AC-04"
+  ],
+  "status": "green",
+  "note": "month_new_starts_the_month_archives_the_last_and_repoints_the_link"
+}

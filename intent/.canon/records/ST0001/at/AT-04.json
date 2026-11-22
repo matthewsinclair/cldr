@@ -1,0 +1,10 @@
+{
+  "id": "AT-04",
+  "kind": "test",
+  "file": "src/cli.rs",
+  "covers": [
+    "AC-02"
+  ],
+  "status": "green",
+  "note": "cli::tests::a_csv_whose_folder_cannot_be_made_names_the_folder"
+}

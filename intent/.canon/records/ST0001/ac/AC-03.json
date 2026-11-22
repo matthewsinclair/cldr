@@ -1,0 +1,8 @@
+{
+  "id": "AC-03",
+  "text": "--force is the only way to replace an existing CSV: without it, an export refuses, names the CSV and leaves it as it was.",
+  "kind": "test",
+  "state": {
+    "is": "computed"
+  }
+}

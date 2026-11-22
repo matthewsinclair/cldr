@@ -1,0 +1,8 @@
+{
+  "id": "AC-02",
+  "text": "data and check read a past month from the Day Notes with --no-calendar: the hours are the rows' sum under the configured spelling of their tag, and check writes nothing.",
+  "kind": "test",
+  "state": {
+    "is": "computed"
+  }
+}

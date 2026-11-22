@@ -1,0 +1,8 @@
+{
+  "id": "AC-01",
+  "text": "An export replaces its CSV whole, through a temporary file and a rename, so an interrupted export never leaves half a CSV in place of a whole one, and no temporary file is left behind, whether the write succeeds or fails.",
+  "kind": "test",
+  "state": {
+    "is": "computed"
+  }
+}

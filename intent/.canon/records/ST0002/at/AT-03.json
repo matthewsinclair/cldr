@@ -1,0 +1,10 @@
+{
+  "id": "AT-03",
+  "kind": "test",
+  "file": "tests/cli.rs",
+  "covers": [
+    "AC-03"
+  ],
+  "status": "green",
+  "note": "briefing_fills_the_day_and_its_block_and_keeps_the_users_text"
+}

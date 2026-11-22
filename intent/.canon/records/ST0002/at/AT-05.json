@@ -1,0 +1,10 @@
+{
+  "id": "AT-05",
+  "kind": "test",
+  "file": "tests/cli.rs",
+  "covers": [
+    "AC-05"
+  ],
+  "status": "green",
+  "note": "export_writes_the_months_csv_and_replaces_it_only_with_force"
+}

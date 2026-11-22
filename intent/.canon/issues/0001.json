@@ -1,6 +1,7 @@
 {
-  "schema": "intent/issue@3.0",
-  "number": 1,
+  "schema": "intent/issue@4.0",
+  "id": "0001",
+  "realised": true,
   "slug": "cldr-has-no-dev-opt-brew-switch-no-tree-identity",
   "title": "Cldr has no dev/opt/brew switch, no tree identity and no contract version line; adopt devbin's one approach",
   "status": "open",

@@ -1,0 +1,10 @@
+{
+  "id": "AT-01",
+  "kind": "test",
+  "file": "tests/cli.rs",
+  "covers": [
+    "AC-01"
+  ],
+  "status": "green",
+  "note": "render_twice_changes_nothing_and_keeps_the_hand_written_text"
+}

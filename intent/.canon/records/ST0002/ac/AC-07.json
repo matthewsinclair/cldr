@@ -1,0 +1,9 @@
+{
+  "id": "AC-07",
+  "text": "The unit tests and tests/cli.rs build their synthetic BusyCal store with one builder, calendar::busycal::fixture, public but hidden, which saves to a file.",
+  "kind": "non-test",
+  "state": {
+    "is": "satisfied",
+    "evidence": "src/calendar/busycal.rs: #[doc(hidden)] pub mod fixture, with Store::save (vacuum into); busycal's unit tests use super::fixture and tests/cli.rs uses cldr::calendar::busycal::fixture::{Spec, Store}; its archive builder, calendar::archive::build, is #[doc(hidden)] pub too"
+  }
+}

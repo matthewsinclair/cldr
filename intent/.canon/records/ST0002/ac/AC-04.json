@@ -1,0 +1,8 @@
+{
+  "id": "AC-04",
+  "text": "month new on a scratch tree creates the month's Day Notes from its template, moves the month before into YYYY/YYYYMM/ and repoints the root link.",
+  "kind": "test",
+  "state": {
+    "is": "computed"
+  }
+}
