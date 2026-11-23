@@ -1,8 +1,10 @@
 # packaging/homebrew/cldr.rb: the template of cldr's Homebrew formula.
 # bin/devbin formula render fills it from a release: @@VERSION@@, the asset's
-# @@SHA256:...@@ from the release's SHA256SUMS, and @@FINISH@@ (0755 on
-# bin/cldr, the manifest, the link in bin). This header is dropped from the
-# render. Edit this file, never a rendered one.
+# @@SHA256:...@@ from the release's SHA256SUMS, and @@INSTALL@@, the install
+# body devbin generates from the install: block in bin/.devbin/config.yaml
+# (devbin#0326, cldr#0001: the tree into libexec, 0755 on bin/cldr, the T3
+# manifest with its line and managed_by: brew, the link in bin). This header
+# is dropped from the render. Edit this file, never a rendered one.
 #
 # REQUIREMENT repeats packaging/macos/signing's designated requirement, which
 # a Ruby formula cannot read.
@@ -29,17 +31,22 @@ class Cldr < Formula
   end
 
   def install
-    # The binary into libexec and the example config into share/cldr, then
-    # devbin's finish: 0755 on bin/cldr, the manifest and the link in bin
-    libexec.install "bin"
-    pkgshare.install "config.toml"
-    @@FINISH@@
+    @@INSTALL@@
+    # The example config, where README.md says it is: share/cldr/config.toml
+    pkgshare.install_symlink libexec/"config.toml"
     verify_signature
+  end
+
+  def caveats
+    <<~EOS
+      If you also run cldr from a checkout, `bin/devbin use brew`, run in that
+      checkout, hands the cldr command back to Homebrew.
+    EOS
   end
 
   test do
     verify_signature
-    assert_match version.to_s, shell_output("#{bin}/cldr --version")
+    assert_match "cldr #{version} (brew, ", shell_output("#{bin}/cldr --version")
     (testpath/"config.toml").write("[journal]\n")
     assert_match "config", shell_output("#{bin}/cldr --config #{testpath}/config.toml paths")
   end

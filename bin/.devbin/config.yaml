@@ -50,5 +50,18 @@ formula:
   mode: assets
   assets:
     - "cldr-{version}-aarch64-apple-darwin.tar.gz"
-  bin:
-    - bin/cldr
+
+# cldr itself, for devbin's dev/opt/brew (devbin#0326, cldr#0001): run in this
+# checkout, `bin/devbin install` publishes the opt tree at the prefix, and
+# `bin/devbin use dev|opt|brew` points ~/.local/bin/cldr at a tree. The tree
+# holds the binary and the example config, which the formula also links as
+# share/cldr/config.toml. commands.build makes target/release/cldr. The
+# manifest is .cldr-install, the default.
+install:
+  prefix: ~/Devel/opt/cldr
+  links:
+    cldr: target/release/cldr
+  files:
+    config:
+      path: config.toml
+      from: examples/config.toml

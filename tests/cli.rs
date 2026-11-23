@@ -381,3 +381,46 @@ fn month_new_starts_the_month_archives_the_last_and_repoints_the_link() -> Resul
   assert_eq!(std::fs::read_link(&link)?, PathBuf::from(&name));
   sandbox.remove()
 }
+
+// The version line, devbin's T4, from devbin's stamp (devbin#0326, cldr#0001).
+// The test binary is built in the same cargo run as cldr, so the line it was
+// handed in DEVBIN_VERSION_LINE, or none, is the one cldr was handed.
+#[test]
+fn version_prints_the_line_bin_devbin_build_stamped() -> Result<()> {
+  let expected = match option_env!("DEVBIN_VERSION_LINE") {
+    Some(line) if !line.is_empty() => line.to_owned(),
+    _ => format!("cldr {} (unknown, unknown)", env!("CARGO_PKG_VERSION")),
+  };
+  let sandbox = Sandbox::new("version")?;
+  for flag in ["--version", "-V"] {
+    assert_eq!(sandbox.ok(&[flag])?, format!("{expected}\n"), "{flag}");
+  }
+  sandbox.remove()
+}
+
+// In an opt or brew tree, the version line is the one its manifest records,
+// under the binary's own name, and a manifest another tool wrote is not read.
+#[test]
+fn version_in_a_tree_prints_its_manifests_line() -> Result<()> {
+  let sandbox = Sandbox::new("version-tree")?;
+  let root = sandbox.home().join("opt");
+  std::fs::create_dir_all(root.join("bin"))?;
+  let cldr = root.join("bin").join("cldr");
+  std::fs::copy(env!("CARGO_BIN_EXE_cldr"), &cldr)?;
+  let manifest = root.join(".cldr-install");
+  let recorded = "cldr 9.8.7 (opt, 0123456789ab)";
+  std::fs::write(
+    &manifest,
+    format!("# tool: cldr\n# version: 9.8.7\n# line: {recorded}\n"),
+  )?;
+  let out = Command::new(&cldr).arg("--version").env_clear().output()?;
+  assert!(out.status.success());
+  assert_eq!(String::from_utf8(out.stdout)?, format!("{recorded}\n"));
+  // Another tool's manifest names no line of cldr's
+  std::fs::write(&manifest, format!("# tool: other\n# line: {recorded}\n"))?;
+  let out = Command::new(&cldr).arg("--version").env_clear().output()?;
+  let printed = String::from_utf8(out.stdout)?;
+  assert_ne!(printed, format!("{recorded}\n"));
+  assert!(printed.starts_with("cldr "), "{printed}");
+  sandbox.remove()
+}

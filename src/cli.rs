@@ -44,7 +44,7 @@ Usage: cldr [--config PATH] COMMAND
   doctor                 Check the config, the journal and calendar access
   paths                  Show resolved paths
   help                   Show this help
-  --version              Show the version
+  --version              Show the version, the tree it runs from and its commit
 
 Config: $XDG_CONFIG_HOME/cldr/config.toml (default ~/.config/cldr/config.toml)
 Override: CLDR_CONFIG or --config PATH. The calendar store is only ever read.";
@@ -72,7 +72,9 @@ fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
   }
 }
 
-pub fn run(mut args: Vec<String>) -> Result<()> {
+/// Run cldr on its arguments. `version_line` is the binary's T4 reader,
+/// which lives in main.rs, where CARGO_BIN_NAME is set (devbin#0326).
+pub fn run(mut args: Vec<String>, version_line: fn() -> String) -> Result<()> {
   let explicit = take_value(&mut args, "--config")?
     .map(|p| config::expand(&p))
     .transpose()?;
@@ -87,7 +89,7 @@ pub fn run(mut args: Vec<String>) -> Result<()> {
       Ok(())
     }
     "--version" | "-V" => {
-      println!("cldr {}", env!("CARGO_PKG_VERSION"));
+      println!("{}", version_line());
       Ok(())
     }
     "paths" => paths(explicit),
