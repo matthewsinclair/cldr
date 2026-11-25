@@ -659,7 +659,7 @@ release:
   # repo: owner/name         # object: local or ci. Undeclared: read off the url of the first declared remotes entry, else origin, else the only remote
   # object_wait: 20m         # object: ci only -- how long to wait for the workflow's release object
   formula: false             # true: the formula step, once the object step has succeeded and before after:, runs formula publish --pull under the cut's yes; needs a formula command
-  # after:                   # commands run after the release object, reported, outside the core's guarantees
+  # after:                   # commands run in order after the release object, reported, outside the core's guarantees; the first that fails stops the rest
   #   - bin/announce
   verbs:                     # the verbs of release this project offers; one left out is refused, exit 2
     - cut                    # a cut: release <--patch|--minor|--major|vX.Y.Z>
