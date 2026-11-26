@@ -10,7 +10,7 @@ The design is [TN0001](docs/notes/tn0001-cldr-design-note.md); how it was built 
 brew install matthewsinclair/cldr/cldr
 ```
 
-The formula installs the signed and notarised cldr for macOS on Apple silicon. From a checkout: `bin/devbin build`, which runs `cargo build --release --locked` and stamps the version line. `cldr --version` names the version, the tree it runs from and its commit, eg `cldr 0.2.3 (brew, 1a2b3c4d5e6f)`. A maintainer publishes an opt tree with `bin/devbin install` and moves `~/.local/bin/cldr` among the dev, opt and brew trees with `bin/devbin use dev|opt|brew`, both run in the checkout (devbin's dev/opt/brew, devbin#0326); `bin/devbin use brew` hands the command back to Homebrew.
+The formula installs the signed and notarised cldr for macOS on Apple silicon. From a checkout: `bin/devbin build`, which runs `cargo build --release --locked` and stamps the version line. `cldr --version` names the version, the tree it runs from and its commit, eg `cldr 0.2.3 (brew, 1a2b3c4d5e6f)`. A maintainer publishes an opt tree with `bin/devbin install` and moves `~/.local/bin/cldr` among the dev, opt and brew trees with `bin/devbin use dev|opt|brew`, both run in the checkout (devbin's dev/opt/brew, devbin#0326); `bin/devbin use brew` hands the command back to Homebrew. [docs/releasing.md](docs/releasing.md) is the maintainer's page.
 
 ## Set up
 

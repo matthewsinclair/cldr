@@ -1,0 +1,65 @@
+#!/usr/bin/env zsh
+# devbin: summary = devbin's T10 proof for cldr: publish opt, then use dev, opt and brew in turn, moving ~/.local/bin/cldr
+# devbin: group = Ship
+#
+# bin/devbin t10-probe: devbin's T10 proof for cldr, through devbin's own
+# publish and switch (devbin#0326, cldr#0001), run in cldr's checkout.
+#
+#   bin/devbin t10-probe [all|dev-opt|brew]
+#
+# `bin/devbin build`, then `bin/devbin install --force` to the install:
+# block's prefix. Then, for each tree, `bin/devbin use <tree>`, with
+# cldr --version naming that tree and `bin/devbin doctor` passing, its shadow
+# check and version-line check included. `all` (the default) runs dev, opt and
+# brew; `dev-opt` publishes and runs dev and opt, then hands the command back to
+# Homebrew; `brew` runs the brew leg alone. It PUBLISHES the opt tree and MOVES
+# ~/.local/bin/cldr, so on the maintainer's machine it changes which cldr
+# answers. It ends on brew, where the switch rests. Each step's verdict is
+# printed, then one verdict line for the run, and it exits non-zero if any step
+# failed. The brew leg reads `(brew, ` only once a release carrying this cldr is
+# installed by Homebrew.
+
+emulate -L zsh
+setopt no_unset pipe_fail
+
+export HOMEBREW_NO_AUTO_UPDATE=1
+root=${0:A:h:h:h:h}
+cd $root
+
+case ${1:-all} in
+  all) trees=(dev opt brew) publish=1 ;;
+  dev-opt) trees=(dev opt) publish=1 ;;
+  brew) trees=(brew) publish=0 ;;
+  *) print -u2 -r -- "usage: bin/devbin t10-probe [all|dev-opt|brew]"; exit 2 ;;
+esac
+
+failed=0
+probe() {
+  local what=$1; shift
+  if "$@"; then print "  ok    $what"; else print "  FAIL  $what"; failed=1; fi
+}
+
+if (( publish )); then
+  print -r -- "== publish"
+  probe "bin/devbin build" bin/devbin build
+  probe "bin/devbin install --force" bin/devbin install --force
+fi
+
+for tree in $trees; do
+  print -r -- "== use $tree"
+  probe "use $tree" bin/devbin use $tree
+  rehash
+  # The link (or, after use brew, Homebrew's) is what answers now
+  probe "version line names $tree" eval '[[ "$(command cldr --version)" == "cldr "*" ($tree, "* ]]'
+  print -r -- "  $(command cldr --version)"
+  probe "bin/devbin doctor" bin/devbin doctor
+done
+
+# The switch rests at brew. After the dev and opt legs alone, hand the
+# command back to Homebrew; this is not a leg, so it gives no verdict.
+if [[ $trees[-1] != brew ]]; then
+  bin/devbin use brew >/dev/null || print -r -- "  note  bin/devbin use brew failed: cldr is left on $trees[-1]"
+fi
+
+print -r -- "t10-probe cldr ${1:-all}: $( (( failed )) && print FAIL || print PASS )"
+exit $failed
