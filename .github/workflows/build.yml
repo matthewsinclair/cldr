@@ -33,6 +33,14 @@ jobs:
           rustup update stable --no-self-update
           rustup default stable
           rustup component add rustfmt clippy
+      # bin/devbin needs bash 5 (devbin issue 0022), and macOS ships 3.2 at /bin/bash.
+      # tests/packaging.rs runs bin/devbin use, so the macOS runner installs a
+      # current bash first on PATH, as Pplr's and devbin's own workflows do.
+      - name: Install bash (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install bash
+          bash --version | head -n 1
       - name: Tag matches the version
         env:
           REF_TYPE: ${{ github.ref_type }}
